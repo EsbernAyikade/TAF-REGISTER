@@ -1,0 +1,28 @@
+<header class="site-header">
+  <div class="container topbar">
+    <a href="<%= currentUser ? '/dashboard' : '/login' %>" class="brand">
+      <img src="/images/ta-logo.jpg" alt="Teens Aloud Foundation logo" class="brand-logo" />
+      <div>
+        <strong>Teens Aloud Foundation</strong>
+        <span>Member Registration & Records</span>
+      </div>
+    </a>
+
+    <nav class="nav">
+      <% if (currentUser) { %>
+        <a href="/dashboard">Dashboard</a>
+        <a href="/members">Members</a>
+        <% fellowships.forEach((fellowship) => { %>
+          <% if (currentUser.access_role !== 'fellowship_admin' || Number(currentUser.fellowship_id) === Number(fellowship.id)) { %>
+            <a href="/fellowships/<%= fellowship.slug %>"><%= fellowship.name.replace(' Love Fellowship', '') %></a>
+          <% } %>
+        <% }) %>
+        <form action="/logout" method="post">
+          <button type="submit" class="button button-outline">Logout</button>
+        </form>
+      <% } else { %>
+        <a href="/login">Login</a>
+      <% } %>
+    </nav>
+  </div>
+</header>

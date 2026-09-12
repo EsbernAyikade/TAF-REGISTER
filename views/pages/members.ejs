@@ -1,0 +1,186 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page">
+  <section class="section-heading">
+    <div>
+      <span class="eyebrow">Directory</span>
+      <h1>Member Database</h1>
+      <p>Search, filter, approve, and export member records.</p>
+    </div>
+    <div class="button-row">
+      <a href="/exports/members.csv?<%= querystring %>" class="button button-outline">Export CSV</a>
+      <a href="/exports/members.xlsx?<%= querystring %>" class="button">Export Excel</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <form action="/members" method="get" class="filter-grid">
+      <label>
+        <span>Search</span>
+        <input type="text" name="search" value="<%= filters.search %>" placeholder="Name, hostel, phone, email" />
+      </label>
+
+      <label>
+        <span>Love Fellowship</span>
+        <select name="fellowshipId">
+          <option value="">All</option>
+          <% fellowships.forEach((fellowship) => { %>
+            <option value="<%= fellowship.id %>" <%= Number(filters.fellowshipId) === Number(fellowship.id) ? 'selected' : '' %>><%= fellowship.name %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>
+        <span>Sub-ministry</span>
+        <select name="subMinistryId">
+          <option value="">All</option>
+          <% subMinistries.forEach((item) => { %>
+            <option value="<%= item.id %>" <%= Number(filters.subMinistryId) === Number(item.id) ? 'selected' : '' %>><%= item.name %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>
+        <span>Gender</span>
+        <select name="gender">
+          <option value="">All</option>
+          <% genderOptions.forEach((option) => { %>
+            <option value="<%= option %>" <%= filters.gender === option ? 'selected' : '' %>><%= option %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>
+        <span>Course</span>
+        <select name="courseId">
+          <option value="">All</option>
+          <% courses.forEach((course) => { %>
+            <option value="<%= course.id %>" <%= Number(filters.courseId) === Number(course.id) ? 'selected' : '' %>><%= course.name %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>
+        <span>Hostel</span>
+        <input type="text" name="hostel" value="<%= filters.hostel %>" placeholder="Filter by hostel" />
+      </label>
+
+      <label>
+        <span>Role</span>
+        <select name="roleId">
+          <option value="">All</option>
+          <% allRoles.forEach((role) => { %>
+            <option value="<%= role.id %>" <%= Number(filters.roleId) === Number(role.id) ? 'selected' : '' %>>
+              <%= role.display_name %> (<%= role.role_type %>)
+            </option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>
+        <span>Level</span>
+        <select name="level">
+          <option value="">All</option>
+          <% studyLevels.forEach((level) => { %>
+            <option value="<%= level %>" <%= filters.level === level ? 'selected' : '' %>><%= level %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label>
+        <span>Status</span>
+        <select name="status">
+          <option value="">All</option>
+          <% memberStatuses.forEach((status) => { %>
+            <option value="<%= status %>" <%= filters.status === status ? 'selected' : '' %>><%= status %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <% if (currentUser.access_role !== 'viewer') { %>
+        <label>
+          <span>Approval Status</span>
+          <select name="approvalStatus">
+            <option value="">All</option>
+            <% approvalStatuses.forEach((status) => { %>
+              <option value="<%= status %>" <%= filters.approvalStatus === status ? 'selected' : '' %>><%= status %></option>
+            <% }) %>
+          </select>
+        </label>
+      <% } %>
+
+      <label class="checkbox-row">
+        <input type="checkbox" name="duplicateOnly" value="1" <%= filters.duplicateOnly ? 'checked' : '' %> />
+        <span>Possible duplicates only</span>
+      </label>
+
+      <div class="form-actions">
+        <button type="submit" class="button">Apply Filters</button>
+        <a href="/members" class="button button-outline">Reset</a>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Fellowship</th>
+            <th>Role</th>
+            <th>Course</th>
+            <th>Level</th>
+            <th>Status</th>
+            <th>Approval</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% if (members.length === 0) { %>
+            <tr>
+              <td colspan="8" class="muted">No members match the selected filters.</td>
+            </tr>
+          <% } %>
+          <% members.forEach((member) => { %>
+            <tr>
+              <td>
+                <a href="/members/<%= member.id %>"><%= member.full_name %></a>
+                <% if (member.duplicate_flag) { %>
+                  <div><span class="badge badge-warning">Duplicate flag</span></div>
+                <% } %>
+              </td>
+              <td><a href="/fellowships/<%= member.fellowship_slug %>"><%= member.fellowship_name %></a></td>
+              <td><%= member.role_name || 'Regular Member' %></td>
+              <td><%= member.course_name %></td>
+              <td><%= member.level %></td>
+              <td><%= member.status %></td>
+              <td>
+                <span class="badge badge-<%= member.approval_status === 'approved' ? 'success' : member.approval_status === 'pending' ? 'warning' : 'danger' %>">
+                  <%= member.approval_status %>
+                </span>
+              </td>
+              <td>
+                <div class="button-row">
+                  <a href="/members/<%= member.id %>" class="button button-small button-outline">View</a>
+                  <% if (isManager && (currentUser.access_role === 'super_admin' || Number(currentUser.fellowship_id) === Number(member.fellowship_id))) { %>
+                    <a href="/members/<%= member.id %>/edit" class="button button-small">Edit</a>
+                    <% if (member.approval_status === 'pending') { %>
+                      <form action="/members/<%= member.id %>/approve" method="post">
+                        <button type="submit" class="button button-small">Approve</button>
+                      </form>
+                    <% } %>
+                  <% } %>
+                </div>
+              </td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>

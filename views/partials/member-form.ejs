@@ -1,0 +1,137 @@
+<div class="form-grid">
+  <label>
+    <span>Full Name</span>
+    <input type="text" name="fullName" value="<%= member.full_name || '' %>" required />
+  </label>
+
+  <label>
+    <span>Gender</span>
+    <select name="gender" required>
+      <option value="">Select gender</option>
+      <% genderOptions.forEach((option) => { %>
+        <option value="<%= option %>" <%= member.gender === option ? 'selected' : '' %>><%= option %></option>
+      <% }) %>
+    </select>
+  </label>
+
+  <label>
+    <span>Birth Day</span>
+    <input type="number" min="1" max="31" name="birthDay" value="<%= member.birth_day || '' %>" required />
+  </label>
+
+  <label>
+    <span>Birth Month</span>
+    <select name="birthMonth" required>
+      <option value="">Select month</option>
+      <% months.forEach((month, index) => { %>
+        <option value="<%= index + 1 %>" <%= Number(member.birth_month) === index + 1 ? 'selected' : '' %>><%= month %></option>
+      <% }) %>
+    </select>
+  </label>
+
+  <label>
+    <span>Hostel</span>
+    <input type="text" name="hostel" value="<%= member.hostel || '' %>" required />
+  </label>
+
+  <label>
+    <span>Course of Study</span>
+    <select name="courseId" required>
+      <option value="">Select course</option>
+      <% courses.forEach((course) => { %>
+        <option value="<%= course.id %>" <%= Number(member.course_id) === Number(course.id) ? 'selected' : '' %>><%= course.name %></option>
+      <% }) %>
+    </select>
+  </label>
+
+  <label>
+    <span>Love Fellowship</span>
+    <select name="fellowshipId" id="fellowship-select" required>
+      <option value="">Select fellowship</option>
+      <% fellowships.forEach((fellowship) => { %>
+        <option value="<%= fellowship.id %>" <%= Number(member.fellowship_id) === Number(fellowship.id) ? 'selected' : '' %>><%= fellowship.name %></option>
+      <% }) %>
+    </select>
+  </label>
+
+  <label>
+    <span>Sub-ministry</span>
+    <select name="subMinistryId">
+      <option value="">None</option>
+      <% subMinistries.forEach((subMinistry) => { %>
+        <option value="<%= subMinistry.id %>" <%= Number(member.sub_ministry_id) === Number(subMinistry.id) ? 'selected' : '' %>><%= subMinistry.name %></option>
+      <% }) %>
+    </select>
+  </label>
+
+  <label>
+    <span>Role / Position</span>
+    <select name="roleId" id="role-select">
+      <option value="">Regular Member</option>
+    </select>
+  </label>
+
+  <label>
+    <span>Phone Number</span>
+    <input type="text" name="phone" value="<%= member.phone || '' %>" required />
+  </label>
+
+  <label>
+    <span>Email</span>
+    <input type="email" name="email" value="<%= member.email || '' %>" required />
+  </label>
+
+  <label>
+    <span>Level / Year of Study</span>
+    <select name="level" required>
+      <option value="">Select level</option>
+      <% studyLevels.forEach((level) => { %>
+        <option value="<%= level %>" <%= String(member.level) === String(level) ? 'selected' : '' %>><%= level %></option>
+      <% }) %>
+    </select>
+  </label>
+
+  <label>
+    <span>Status</span>
+    <select name="status" required>
+      <% memberStatuses.forEach((status) => { %>
+        <option value="<%= status %>" <%= member.status === status ? 'selected' : '' %>><%= status %></option>
+      <% }) %>
+    </select>
+  </label>
+</div>
+
+<script>
+  (() => {
+    const fellowshipSelect = document.getElementById("fellowship-select");
+    const roleSelect = document.getElementById("role-select");
+    const roleCatalog = <%- JSON.stringify(roleCatalogByFellowship) %>;
+    const selectedRoleId = "<%= member.role_id || '' %>";
+
+    function renderRoles() {
+      const fellowshipId = fellowshipSelect.value;
+      const roles = roleCatalog[fellowshipId] || [];
+      roleSelect.innerHTML = '<option value="">Regular Member</option>';
+
+      roles.forEach((role) => {
+        const option = document.createElement("option");
+        option.value = role.id;
+        option.textContent = `${role.display_name} (${role.role_type})`;
+        if (String(role.id) === String(selectedRoleId)) {
+          option.selected = true;
+        }
+        roleSelect.appendChild(option);
+      });
+    }
+
+    fellowshipSelect.addEventListener("change", () => {
+      const currentSelection = roleSelect.value;
+      renderRoles();
+      if (currentSelection && Array.from(roleSelect.options).some((option) => option.value === currentSelection)) {
+        roleSelect.value = currentSelection;
+      }
+    });
+
+    renderRoles();
+  })();
+</script>

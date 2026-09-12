@@ -1,0 +1,24 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page narrow-page">
+  <section class="card">
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">Member Management</span>
+        <h1>Edit <%= member.full_name %></h1>
+      </div>
+      <a href="/members/<%= member.id %>" class="button button-outline">Back to Record</a>
+    </div>
+
+    <form action="/members/<%= member.id %>/edit" method="post" class="stack">
+      <%- include('../partials/member-form', { member }) %>
+      <div class="form-actions">
+        <button type="submit" class="button">Save Changes</button>
+      </div>
+    </form>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>

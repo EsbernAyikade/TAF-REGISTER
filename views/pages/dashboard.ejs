@@ -1,0 +1,180 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page">
+  <section class="section-heading">
+    <div>
+      <span class="eyebrow">Dashboard</span>
+      <h1>Welcome, <%= currentUser.full_name %></h1>
+      <p>
+        Weekly overview for <%= currentUser.access_role === 'fellowship_admin' ? currentUser.fellowship_name : 'all Love Fellowships' %>.
+      </p>
+    </div>
+    <div class="button-row">
+      <a href="/members" class="button">Open Directory</a>
+      <a href="/exports/members.xlsx" class="button button-outline">Export Excel</a>
+    </div>
+  </section>
+
+  <section class="stats-grid">
+    <article class="stat-card">
+      <span>Total Members</span>
+      <strong><%= totalMembers %></strong>
+    </article>
+    <article class="stat-card">
+      <span>Birthdays This Week</span>
+      <strong><%= birthdaysThisWeek.length %></strong>
+    </article>
+    <article class="stat-card">
+      <span>Week Range</span>
+      <strong><%= formatDate(currentWeekStart) %></strong>
+      <small>to <%= formatDate(currentWeekEnd) %></small>
+    </article>
+    <article class="stat-card">
+      <span>Pending Approvals</span>
+      <strong><%= pendingApprovals.length %></strong>
+    </article>
+  </section>
+
+  <section class="two-column">
+    <article class="card">
+      <div class="section-heading">
+        <div>
+          <h2>Weekly Attendance Report</h2>
+          <p>Cross-fellowship turnout for the current week.</p>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Love Fellowship</th>
+              <th>Present</th>
+              <th>Members</th>
+              <th>Rate</th>
+              <th>Headline</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% attendanceSummary.forEach((item) => { %>
+              <tr>
+                <td><a href="/fellowships/<%= item.slug %>"><%= item.name %></a></td>
+                <td><%= item.present_total %></td>
+                <td><%= item.member_total %></td>
+                <td><%= item.rate %>%</td>
+                <td><%= item.headline %></td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="section-heading">
+        <div>
+          <h2>Birthdays This Week</h2>
+          <p>Celebrate members whose birthdays are coming up.</p>
+        </div>
+      </div>
+      <div class="list-stack">
+        <% if (birthdaysThisWeek.length === 0) { %>
+          <p class="muted">No upcoming birthdays recorded this week.</p>
+        <% } %>
+        <% birthdaysThisWeek.forEach((birthday) => { %>
+          <div class="list-item">
+            <div>
+              <strong><a href="/members/<%= birthday.id %>"><%= birthday.full_name %></a></strong>
+              <p><%= birthday.fellowship_name %> · <%= formatBirthday(birthday.birth_day, birthday.birth_month) %></p>
+            </div>
+            <span class="badge badge-info"><%= birthday.diffDays === 0 ? 'Today' : `${birthday.diffDays} day(s)` %></span>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+  </section>
+
+  <section class="three-column">
+    <article class="card">
+      <h2>Members by Fellowship</h2>
+      <div class="list-stack">
+        <% fellowshipStats.forEach((item) => { %>
+          <div class="list-item">
+            <span><a href="/fellowships/<%= item.slug %>"><%= item.name %></a></span>
+            <strong><%= item.count %></strong>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+
+    <article class="card">
+      <h2>Gender Distribution</h2>
+      <div class="list-stack">
+        <% genderStats.forEach((item) => { %>
+          <div class="list-item">
+            <span><%= item.gender %></span>
+            <strong><%= item.count %></strong>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+
+    <article class="card">
+      <h2>Sub-ministry Split</h2>
+      <div class="list-stack">
+        <% subMinistryStats.forEach((item) => { %>
+          <div class="list-item">
+            <span><%= item.name %></span>
+            <strong><%= item.count %></strong>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+  </section>
+
+  <% if (pendingApprovals.length > 0) { %>
+    <section class="card">
+      <div class="section-heading">
+        <div>
+          <h2>Pending Registrations</h2>
+          <p>New registrations waiting for approval.</p>
+        </div>
+      </div>
+      <div class="list-stack">
+        <% pendingApprovals.forEach((item) => { %>
+          <div class="list-item">
+            <div>
+              <strong><a href="/members/<%= item.id %>"><%= item.full_name %></a></strong>
+              <p><%= item.fellowship_name %></p>
+            </div>
+            <div class="button-row">
+              <% if (item.duplicate_flag) { %>
+                <span class="badge badge-warning">Possible duplicate</span>
+              <% } %>
+              <form action="/members/<%= item.id %>/approve" method="post">
+                <button type="submit" class="button">Approve</button>
+              </form>
+            </div>
+          </div>
+        <% }) %>
+      </div>
+    </section>
+  <% } %>
+
+  <section class="card">
+    <div class="section-heading">
+      <div>
+        <h2>Birthdays This Month</h2>
+        <p>Month-at-a-glance reminder for leaders and welfare teams.</p>
+      </div>
+    </div>
+    <div class="chips">
+      <% birthdaysThisMonth.forEach((birthday) => { %>
+        <span class="chip"><%= birthday.full_name %> · <%= formatBirthday(birthday.birth_day, birthday.birth_month) %></span>
+      <% }) %>
+    </div>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>

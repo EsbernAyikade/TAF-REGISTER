@@ -1,0 +1,82 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page">
+  <section class="section-heading">
+    <div>
+      <span class="eyebrow">Member Record</span>
+      <h1><%= member.full_name %></h1>
+      <p><%= member.fellowship_name %> · <%= member.role_name || 'Regular Member' %></p>
+    </div>
+    <% if (canManage) { %>
+      <div class="button-row">
+        <a href="/members/<%= member.id %>/edit" class="button">Edit Record</a>
+        <% if (member.approval_status === 'pending') { %>
+          <form action="/members/<%= member.id %>/approve" method="post">
+            <button type="submit" class="button button-outline">Approve</button>
+          </form>
+        <% } %>
+      </div>
+    <% } %>
+  </section>
+
+  <section class="two-column">
+    <article class="card">
+      <h2>Member Information</h2>
+      <dl class="detail-grid">
+        <div><dt>Gender</dt><dd><%= member.gender %></dd></div>
+        <div><dt>Birthday</dt><dd><%= formatBirthday(member.birth_day, member.birth_month) %></dd></div>
+        <div><dt>Hostel</dt><dd><%= member.hostel %></dd></div>
+        <div><dt>Course</dt><dd><%= member.course_name %></dd></div>
+        <div><dt>Sub-ministry</dt><dd><%= member.sub_ministry_name || 'None' %></dd></div>
+        <div><dt>Phone</dt><dd><%= member.phone %></dd></div>
+        <div><dt>Email</dt><dd><%= member.email %></dd></div>
+        <div><dt>Level</dt><dd><%= member.level %></dd></div>
+        <div><dt>Status</dt><dd><%= member.status %></dd></div>
+        <div><dt>Approval</dt><dd><%= member.approval_status %></dd></div>
+        <div><dt>Date Joined</dt><dd><%= formatDate(member.joined_at) %></dd></div>
+        <div><dt>Approved At</dt><dd><%= formatDate(member.approved_at) %></dd></div>
+      </dl>
+      <% if (member.duplicate_flag && member.duplicate_notes) { %>
+        <div class="notice-box warning-box">
+          <strong>Possible duplicate detected</strong>
+          <p><%= member.duplicate_notes %></p>
+        </div>
+      <% } %>
+    </article>
+
+    <article class="card">
+      <h2>Attendance Snapshot</h2>
+      <div class="stats-grid single-column">
+        <article class="stat-card">
+          <span>Weeks Attended</span>
+          <strong><%= attendanceStats.attended_weeks %></strong>
+        </article>
+        <article class="stat-card">
+          <span>Weeks Missed</span>
+          <strong><%= attendanceStats.missed_weeks %></strong>
+        </article>
+        <article class="stat-card">
+          <span>Attendance Rate</span>
+          <strong><%= attendanceStats.rate %>%</strong>
+        </article>
+      </div>
+      <div class="list-stack">
+        <% if (attendanceHistory.length === 0) { %>
+          <p class="muted">No attendance has been recorded for this fellowship yet.</p>
+        <% } %>
+        <% attendanceHistory.forEach((entry) => { %>
+          <div class="list-item">
+            <span><%= weekLabel(entry.week_start, entry.week_end) %></span>
+            <span class="badge badge-<%= entry.present ? 'success' : 'danger' %>">
+              <%= entry.present ? 'Present' : 'Absent / Not marked' %>
+            </span>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>

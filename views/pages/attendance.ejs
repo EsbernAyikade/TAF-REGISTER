@@ -1,0 +1,70 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page">
+  <section class="section-heading">
+    <div>
+      <span class="eyebrow">Attendance</span>
+      <h1><%= fellowship.name %></h1>
+      <p>Record weekly attendance and review turnout history.</p>
+    </div>
+    <a href="/fellowships/<%= fellowship.slug %>" class="button button-outline">Back to Fellowship</a>
+  </section>
+
+  <section class="two-column">
+    <article class="card">
+      <div class="section-heading">
+        <div>
+          <h2>Mark Attendance</h2>
+          <p><%= weekLabel %></p>
+        </div>
+      </div>
+      <form action="/fellowships/<%= fellowship.slug %>/attendance" method="post" class="stack">
+        <label>
+          <span>Week starting</span>
+          <input type="date" name="weekStart" value="<%= weekStart %>" required />
+        </label>
+
+        <div class="checklist">
+          <% if (members.length === 0) { %>
+            <p class="muted">No active approved members are available to mark.</p>
+          <% } %>
+          <% members.forEach((member) => { %>
+            <label class="checkbox-row member-row">
+              <input
+                type="checkbox"
+                name="presentMemberIds"
+                value="<%= member.id %>"
+                <%= markedLookup.get(member.id) ? 'checked' : '' %>
+              />
+              <span><%= member.full_name %></span>
+            </label>
+          <% }) %>
+        </div>
+
+        <button type="submit" class="button">Save Attendance</button>
+      </form>
+    </article>
+
+    <article class="card">
+      <h2>Attendance History</h2>
+      <div class="trend-list">
+        <% if (history.length === 0) { %><p class="muted">No attendance history yet.</p><% } %>
+        <% history.forEach((entry) => { %>
+          <div class="trend-row">
+            <div class="trend-meta">
+              <strong><%= entry.label %></strong>
+              <span><%= entry.present_total %> present</span>
+            </div>
+            <div class="trend-bar">
+              <span style="width: <%= entry.percentage %>%"></span>
+            </div>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>

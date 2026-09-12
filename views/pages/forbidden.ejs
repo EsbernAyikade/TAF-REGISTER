@@ -1,0 +1,9 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<main class="container page narrow-page">
+  <section class="card">
+    <h1>Access denied</h1>
+    <p><%= typeof message === 'string' ? message : 'You do not have permission to view this page.' %></p>
+  </section>
+</main>
+<%- include('../partials/footer') %>

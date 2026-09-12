@@ -1,0 +1,120 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page">
+  <section class="section-heading">
+    <div>
+      <span class="eyebrow">Love Fellowship</span>
+      <h1><%= fellowship.name %></h1>
+      <p>Leadership, member records, stats, and weekly turnout for this branch.</p>
+    </div>
+    <div class="button-row">
+      <a href="/members?fellowshipId=<%= fellowship.id %>" class="button button-outline">View Directory Slice</a>
+      <% if (canManage) { %>
+        <a href="/fellowships/<%= fellowship.slug %>/attendance" class="button">Mark Attendance</a>
+      <% } %>
+    </div>
+  </section>
+
+  <section class="stats-grid">
+    <article class="stat-card"><span>Total Members</span><strong><%= stats.totalMembers %></strong></article>
+    <article class="stat-card"><span>Male</span><strong><%= stats.maleMembers %></strong></article>
+    <article class="stat-card"><span>Female</span><strong><%= stats.femaleMembers %></strong></article>
+    <article class="stat-card"><span>Attendance This Week</span><strong><%= attendanceHeadline ? attendanceHeadline.present_total : 0 %></strong></article>
+  </section>
+
+  <section class="two-column">
+    <article class="card">
+      <h2>Leadership Team</h2>
+      <div class="leadership-grid">
+        <div>
+          <h3>Executives</h3>
+          <% if (leaders.executives.length === 0) { %><p class="muted">No executives assigned.</p><% } %>
+          <% leaders.executives.forEach((member) => { %>
+            <div class="list-item compact">
+              <span><a href="/members/<%= member.id %>"><%= member.full_name %></a></span>
+              <strong><%= member.role_name %></strong>
+            </div>
+          <% }) %>
+        </div>
+        <div>
+          <h3>Directors</h3>
+          <% if (leaders.directors.length === 0) { %><p class="muted">No directors assigned.</p><% } %>
+          <% leaders.directors.forEach((member) => { %>
+            <div class="list-item compact">
+              <span><a href="/members/<%= member.id %>"><%= member.full_name %></a></span>
+              <strong><%= member.role_name %></strong>
+            </div>
+          <% }) %>
+        </div>
+        <div>
+          <h3>Reps</h3>
+          <% if (leaders.reps.length === 0) { %><p class="muted">No reps assigned.</p><% } %>
+          <% leaders.reps.forEach((member) => { %>
+            <div class="list-item compact">
+              <span><a href="/members/<%= member.id %>"><%= member.full_name %></a></span>
+              <strong><%= member.role_name %></strong>
+            </div>
+          <% }) %>
+        </div>
+      </div>
+    </article>
+
+    <article class="card">
+      <h2>Weekly Attendance Trend</h2>
+      <p class="muted">
+        <%= attendanceHeadline ? attendanceHeadline.headline : `No attendance captured yet for ${fellowship.name}.` %>
+      </p>
+      <div class="trend-list">
+        <% if (trend.length === 0) { %><p class="muted">No attendance history yet.</p><% } %>
+        <% trend.forEach((entry) => { %>
+          <div class="trend-row">
+            <div class="trend-meta">
+              <strong><%= entry.label %></strong>
+              <span><%= entry.present_total %> present</span>
+            </div>
+            <div class="trend-bar">
+              <span style="width: <%= entry.percentage %>%"></span>
+            </div>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+  </section>
+
+  <section class="card">
+    <div class="section-heading">
+      <div>
+        <h2>Members</h2>
+        <p>Approved members belonging to this Love Fellowship.</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Role</th>
+            <th>Sub-ministry</th>
+            <th>Course</th>
+            <th>Level</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% members.forEach((member) => { %>
+            <tr>
+              <td><a href="/members/<%= member.id %>"><%= member.full_name %></a></td>
+              <td><%= member.role_name || 'Regular Member' %></td>
+              <td><%= member.sub_ministry_name || 'None' %></td>
+              <td><%= member.course_name %></td>
+              <td><%= member.level %></td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>
