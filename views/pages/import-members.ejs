@@ -1,0 +1,26 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page narrow-page">
+  <section class="card">
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">Import</span>
+        <h1>Bulk Member Import</h1>
+      </div>
+    </div>
+
+    <form action="/members/import" method="post" enctype="multipart/form-data" class="stack">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+      <label>
+        <span>Select CSV file</span>
+        <input type="file" name="csvFile" accept=".csv,text/csv" required />
+      </label>
+      <p class="muted">Expected columns: full name, gender, birth day, birth month, hostel, course, love fellowship, phone, email, level, status.</p>
+      <button type="submit" class="button">Import Members</button>
+    </form>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>

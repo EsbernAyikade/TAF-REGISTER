@@ -4,6 +4,9 @@ const bcrypt = require("bcryptjs");
 const ExcelJS = require("exceljs");
 const express = require("express");
 const session = require("express-session");
+const csrf = require("csurf");
+const multer = require("multer");
+const rateLimit = require("express-rate-limit");
 const {
   APPROVAL_STATUSES,
   GENDER_OPTIONS,
@@ -12,6 +15,12 @@ const {
   MONTHS,
   STUDY_LEVELS,
 } = require("./constants");
+const {
+  areLikelyNameMatches,
+  isValidBirthDate,
+  normalizeName,
+  normalizePhone,
+} = require("./domain-utils");
 const { db, initializeDatabase } = require("./database");
 
 initializeDatabase();
@@ -21,15 +30,20 @@ const isProduction = process.env.NODE_ENV === "production";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_REGISTRATION_ONLY = process.env.PUBLIC_REGISTRATION_ONLY === "true";
+const SESSION_SECRET = process.env.SESSION_SECRET || (isProduction ? null : "dev-only-local-session-secret");
 
-app.set("trust proxy", true);
+if (isProduction && !SESSION_SECRET) {
+  throw new Error("SESSION_SECRET is required in production.");
+}
+
+app.set("trust proxy", 1);
 
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "..", "views"));
 app.use(express.urlencoded({ extended: true }));
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "teens-aloud-session-secret",
+    secret: SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
@@ -40,6 +54,33 @@ app.use(
     },
   })
 );
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 8,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: "Too many login attempts. Please wait 15 minutes before trying again.",
+  skipSuccessfulRequests: true,
+});
+const registrationLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: "Too many registrations. Please try again later.",
+});
+const csrfProtection = csrf({ cookie: false });
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 2 * 1024 * 1024 },
+});
+
+app.use(csrfProtection);
+app.use((req, res, next) => {
+  res.locals.csrfToken = req.csrfToken ? req.csrfToken() : "";
+  next();
+});
 app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.locals.months = MONTHS;
@@ -88,6 +129,7 @@ app.use((req, res, next) => {
   }, {});
 
   res.locals.currentUser = user;
+  res.locals.currentPath = req.path;
   res.locals.fellowships = fellowships;
   res.locals.courses = courses;
   res.locals.subMinistries = subMinistries;
@@ -110,6 +152,15 @@ app.use((req, res, next) => {
   res.locals.isManager =
     user && (user.access_role === "super_admin" || user.access_role === "fellowship_admin");
   req.currentUser = user;
+
+  if (
+    user &&
+    Number(user.must_change_password) === 1 &&
+    !["/account/change-password", "/logout", "/login", "/health"].includes(req.path)
+  ) {
+    return res.redirect("/account/change-password");
+  }
+
   delete req.session.flash;
   next();
 });
@@ -287,38 +338,41 @@ function getBirthdaysThisMonth() {
 }
 
 function detectDuplicateMembers({ fullName, email, phone, memberId }) {
-  const conditions = [];
-  const params = [];
+  const normalizedName = String(fullName || "").trim();
+  const normalizedEmail = String(email || "").trim().toLowerCase();
+  const normalizedPhone = normalizePhone(phone);
 
-  if (fullName) {
-    conditions.push("LOWER(TRIM(full_name)) = LOWER(TRIM(?))");
-    params.push(fullName);
-  }
-  if (email) {
-    conditions.push("LOWER(TRIM(email)) = LOWER(TRIM(?))");
-    params.push(email);
-  }
-  if (phone) {
-    conditions.push("REPLACE(phone, ' ', '') = REPLACE(?, ' ', '')");
-    params.push(phone);
-  }
+  const rows = db
+    .prepare(
+      `
+        SELECT id, full_name, phone, email, fellowship_id
+        FROM members
+        WHERE approval_status != 'rejected'
+      `
+    )
+    .all();
 
-  if (conditions.length === 0) {
-    return [];
-  }
+  return rows.filter((row) => {
+    if (memberId && Number(row.id) === Number(memberId)) {
+      return false;
+    }
 
-  let query = `
-    SELECT id, full_name, phone, email
-    FROM members
-    WHERE (${conditions.join(" OR ")})
-  `;
+    const rowName = String(row.full_name || "").trim();
+    const rowEmail = String(row.email || "").trim().toLowerCase();
+    const rowPhone = normalizePhone(row.phone);
 
-  if (memberId) {
-    query += " AND id != ?";
-    params.push(memberId);
-  }
+    const exactNameMatch =
+      normalizedName && rowName && normalizeName(rowName) === normalizeName(normalizedName);
+    const exactEmailMatch = normalizedEmail && rowEmail && rowEmail === normalizedEmail;
+    const exactPhoneMatch = normalizedPhone && rowPhone && rowPhone === normalizedPhone;
+    const fuzzyNameMatch =
+      normalizedName &&
+      rowName &&
+      areLikelyNameMatches(rowName, normalizedName) &&
+      Math.abs(String(row.full_name).length - String(normalizedName).length) < 6;
 
-  return db.prepare(query).all(...params);
+    return exactNameMatch || exactEmailMatch || exactPhoneMatch || fuzzyNameMatch;
+  });
 }
 
 function validateRoleForFellowship(roleId, fellowshipId) {
@@ -339,6 +393,36 @@ function validateRoleForFellowship(roleId, fellowshipId) {
   }
 
   return true;
+}
+
+function parseCsvLine(line) {
+  const cells = [];
+  let current = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const currentChar = line[index];
+    if (currentChar === '"') {
+      if (inQuotes && line[index + 1] === '"') {
+        current += '"';
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (currentChar === "," && !inQuotes) {
+      cells.push(current.trim());
+      current = "";
+      continue;
+    }
+
+    current += currentChar;
+  }
+
+  cells.push(current.trim());
+  return cells;
 }
 
 function parseMemberPayload(body) {
@@ -376,12 +460,8 @@ function validateMemberPayload(payload) {
     return "Please complete all required fields.";
   }
 
-  if (payload.birthDay < 1 || payload.birthDay > 31) {
-    return "Birth day must be between 1 and 31.";
-  }
-
-  if (payload.birthMonth < 1 || payload.birthMonth > 12) {
-    return "Birth month must be between 1 and 12.";
+  if (!isValidBirthDate(payload.birthDay, payload.birthMonth)) {
+    return "Please enter a valid birth day and month.";
   }
 
   if (!validateRoleForFellowship(payload.roleId, payload.fellowshipId)) {
@@ -569,10 +649,10 @@ app.get("/", (req, res) => {
   if (req.currentUser) {
     return res.redirect("/dashboard");
   }
-  return res.redirect("/login");
+  return res.redirect("/register");
 });
 
-app.get("/register", requireAuth, (req, res) => {
+app.get("/register", (req, res) => {
   res.render("pages/register", {
     pageTitle: "Member Registration",
     member: {
@@ -590,10 +670,41 @@ app.get("/register", requireAuth, (req, res) => {
       level: "",
       status: "Active",
     },
+    csrfToken: res.locals.csrfToken,
   });
 });
 
-app.post("/register", requireAuth, (req, res) => {
+app.get("/members/new", requireAuth, (req, res) => {
+  res.render("pages/register", {
+    pageTitle: "Add Member",
+    member: {
+      full_name: "",
+      gender: "",
+      birth_day: "",
+      birth_month: "",
+      hostel: "",
+      course_id: "",
+      fellowship_id: "",
+      sub_ministry_id: "",
+      role_id: "",
+      phone: "",
+      email: "",
+      level: "",
+      status: "Active",
+    },
+    csrfToken: res.locals.csrfToken,
+  });
+});
+
+app.post("/register", registrationLimiter, csrfProtection, (req, res) => {
+  if (req.body.website || req.body.honeypot) {
+    return res.status(400).render("pages/register", {
+      pageTitle: "Member Registration",
+      member: {},
+      csrfToken: res.locals.csrfToken,
+    });
+  }
+
   const payload = parseMemberPayload(req.body);
   const validationError = validateMemberPayload(payload);
 
@@ -616,6 +727,7 @@ app.post("/register", requireAuth, (req, res) => {
         level: payload.level,
         status: payload.status,
       },
+      csrfToken: res.locals.csrfToken,
     });
   }
 
@@ -668,10 +780,10 @@ app.post("/register", requireAuth, (req, res) => {
 });
 
 app.get("/login", (req, res) => {
-  res.render("pages/login", { pageTitle: "Login" });
+  res.render("pages/login", { pageTitle: "Login", csrfToken: res.locals.csrfToken });
 });
 
-app.post("/login", (req, res) => {
+app.post("/login", loginLimiter, csrfProtection, (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
   const user = db
@@ -684,11 +796,95 @@ app.post("/login", (req, res) => {
   }
 
   req.session.userId = user.id;
+  logAudit(user.id, "login", "user", user.id, null);
+
+  if (Number(user.must_change_password) === 1) {
+    setFlash(req, "warning", "Please set a new password to continue.");
+    return res.redirect("/account/change-password");
+  }
+
   setFlash(req, "success", `Welcome back, ${user.full_name}.`);
   return res.redirect("/dashboard");
 });
 
-app.post("/logout", requireAuth, (req, res) => {
+app.get("/account/change-password", requireAuth, (req, res) => {
+  res.render("pages/change-password", {
+    pageTitle: "Change Password",
+    csrfToken: res.locals.csrfToken,
+  });
+});
+
+app.post("/account/change-password", requireAuth, csrfProtection, (req, res) => {
+  const password = String(req.body.password || "");
+  const confirm = String(req.body.confirmPassword || "");
+
+  if (!password || password.length < 8) {
+    setFlash(req, "error", "Password must be at least 8 characters.");
+    return res.redirect("/account/change-password");
+  }
+
+  if (password !== confirm) {
+    setFlash(req, "error", "Passwords do not match.");
+    return res.redirect("/account/change-password");
+  }
+
+  db.prepare(
+    "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?"
+  ).run(bcrypt.hashSync(password, 10), req.currentUser.id);
+
+  logAudit(req.currentUser.id, "password_changed", "user", req.currentUser.id, null);
+  setFlash(req, "success", "Your password has been updated.");
+  return res.redirect("/dashboard");
+});
+
+app.get("/admin/users", requireAuth, (req, res) => {
+  if (req.currentUser.access_role !== "super_admin") {
+    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
+  }
+
+  const users = db
+    .prepare(
+      `
+        SELECT users.*, fellowships.name AS fellowship_name
+        FROM users
+        LEFT JOIN fellowships ON fellowships.id = users.fellowship_id
+        ORDER BY users.full_name
+      `
+    )
+    .all();
+
+  res.render("pages/admin-users", {
+    pageTitle: "User Administration",
+    users,
+    csrfToken: res.locals.csrfToken,
+  });
+});
+
+app.post("/admin/users/:id/reset-password", requireAuth, csrfProtection, (req, res) => {
+  if (req.currentUser.access_role !== "super_admin") {
+    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
+  }
+
+  const targetUser = db
+    .prepare("SELECT id, full_name, email FROM users WHERE id = ?")
+    .get(Number(req.params.id));
+
+  if (!targetUser) {
+    return res.status(404).render("pages/not-found", { pageTitle: "User Not Found" });
+  }
+
+  const newPassword = `Taf-${targetUser.full_name.replace(/\s+/g, "").slice(0, 8)}!2026`;
+  db.prepare(
+    "UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?"
+  ).run(bcrypt.hashSync(newPassword, 10), targetUser.id);
+
+  logAudit(req.currentUser.id, "password_reset", "user", targetUser.id, `reset by admin`);
+  setFlash(req, "success", `${targetUser.email} was reset. Temporary password: ${newPassword}`);
+  return res.redirect("/admin/users");
+});
+
+app.post("/logout", requireAuth, csrfProtection, (req, res) => {
+  logAudit(req.currentUser.id, "logout", "user", req.currentUser.id, null);
   req.session.destroy(() => {
     res.redirect("/login");
   });
@@ -841,7 +1037,101 @@ app.get("/members", requireAuth, (req, res) => {
       approvalStatus: filters.approvalStatus,
       duplicateOnly: filters.duplicateOnly ? "1" : "",
     }),
+    csrfToken: res.locals.csrfToken,
   });
+});
+
+app.get("/members/import", requireAuth, (req, res) => {
+  if (req.currentUser.access_role !== "super_admin") {
+    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
+  }
+
+  res.render("pages/import-members", {
+    pageTitle: "Bulk Import Members",
+    csrfToken: res.locals.csrfToken,
+  });
+});
+
+app.post("/members/import", requireAuth, upload.single("csvFile"), csrfProtection, (req, res) => {
+  if (req.currentUser.access_role !== "super_admin") {
+    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
+  }
+
+  if (!req.file) {
+    setFlash(req, "error", "Please choose a CSV file to import.");
+    return res.redirect("/members/import");
+  }
+
+  const fileText = req.file.buffer.toString("utf8");
+  const rows = fileText.split(/\r?\n/).filter((row) => row.trim().length > 0);
+  if (rows.length < 2) {
+    setFlash(req, "error", "The CSV file is empty or missing data.");
+    return res.redirect("/members/import");
+  }
+
+  const headers = parseCsvLine(rows[0]).map((header) => header.toLowerCase().replace(/[^a-z0-9]+/g, ""));
+  const inserted = [];
+
+  for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+    const values = parseCsvLine(rows[rowIndex]);
+    const item = Object.fromEntries(headers.map((header, index) => [header, values[index] || ""]));
+    const memberPayload = {
+      fullName: item.fullname || item.name || item.membername,
+      gender: item.gender,
+      birthDay: Number(item.birthday ? item.birthday.split("/")[0] : item.birthdayday || item.birthday),
+      birthMonth: Number(item.birthday ? item.birthday.split("/")[1] : item.birthmonth || item.birthmonthnumber),
+      hostel: item.hostel,
+      courseId: Number(item.courseid || item.course || "0"),
+      fellowshipId: Number(item.fellowshipid || item.lovefellowship || "0"),
+      subMinistryId: item.subministryid ? Number(item.subministryid) : null,
+      roleId: item.roleid ? Number(item.roleid) : null,
+      phone: item.phone,
+      email: item.email,
+      level: item.level,
+      status: item.status || "Active",
+    };
+
+    if (!memberPayload.fullName || !memberPayload.email || !memberPayload.courseId || !memberPayload.fellowshipId) {
+      continue;
+    }
+
+    const validated = validateMemberPayload(memberPayload);
+    if (!validated) {
+      const duplicates = detectDuplicateMembers(memberPayload);
+      db.prepare(
+        `
+          INSERT INTO members (
+            full_name, gender, birth_day, birth_month, hostel,
+            course_id, fellowship_id, sub_ministry_id, role_id,
+            phone, email, level, status, approval_status,
+            duplicate_flag, duplicate_notes
+          )
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        `
+      ).run(
+        memberPayload.fullName,
+        memberPayload.gender,
+        memberPayload.birthDay,
+        memberPayload.birthMonth,
+        memberPayload.hostel,
+        memberPayload.courseId,
+        memberPayload.fellowshipId,
+        memberPayload.subMinistryId,
+        memberPayload.roleId,
+        memberPayload.phone,
+        memberPayload.email,
+        memberPayload.level,
+        memberPayload.status,
+        duplicates.length ? 1 : 0,
+        duplicates.length ? duplicates.map((item) => item.full_name).join("; ") : null
+      );
+      inserted.push(memberPayload.fullName);
+    }
+  }
+
+  logAudit(req.currentUser.id, "members_imported", "member", null, `${inserted.length} rows imported`);
+  setFlash(req, "success", `Bulk import complete. ${inserted.length} members added for review.`);
+  return res.redirect("/members");
 });
 
 app.get("/members/:id", requireAuth, (req, res) => {
@@ -1322,6 +1612,7 @@ app.get("/exports/members.csv", requireAuth, (req, res) => {
 
   const { sql, params } = buildMembersQuery(filters, req.currentUser);
   const members = db.prepare(sql).all(...params);
+  logAudit(req.currentUser.id, "members_exported_csv", "export", null, JSON.stringify(filters));
   const header = [
     "Full Name",
     "Gender",
@@ -1385,6 +1676,7 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
 
     const { sql, params } = buildMembersQuery(filters, req.currentUser);
     const members = db.prepare(sql).all(...params);
+    logAudit(req.currentUser.id, "members_exported_xlsx", "export", null, JSON.stringify(filters));
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Members");

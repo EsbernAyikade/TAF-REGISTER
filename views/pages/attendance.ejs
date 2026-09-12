@@ -21,6 +21,7 @@
         </div>
       </div>
       <form action="/fellowships/<%= fellowship.slug %>/attendance" method="post" class="stack">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
         <label>
           <span>Week starting</span>
           <input type="date" name="weekStart" value="<%= weekStart %>" required />

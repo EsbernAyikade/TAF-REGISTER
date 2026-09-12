@@ -9,11 +9,16 @@ const {
   buildRoleSeed,
 } = require("./constants");
 
+const isProduction = process.env.NODE_ENV === "production";
 const configuredDatabasePath = process.env.DATABASE_PATH;
 const dataDirectory = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "..", "data");
 const defaultDatabasePath = path.join(dataDirectory, "teens-aloud.db");
+
+if (isProduction && !process.env.SESSION_SECRET) {
+  throw new Error("SESSION_SECRET must be set in production.");
+}
 
 function resolveDatabasePath() {
   if (!configuredDatabasePath) {
@@ -45,11 +50,24 @@ const db = new Database(databasePath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
+function getDefaultPassword() {
+  const password =
+    process.env.DEFAULT_USER_PASSWORD ||
+    process.env.SUPER_ADMIN_PASSWORD ||
+    (isProduction ? null : "Taf_2026!Secure");
+
+  if (isProduction && !password) {
+    throw new Error("DEFAULT_USER_PASSWORD must be set in production.");
+  }
+
+  return password;
+}
+
 function getSeedUsers() {
   const gazaFellowship = db
     .prepare("SELECT id FROM fellowships WHERE slug = ?")
     .get("gaza-love-fellowship");
-  const defaultPassword = process.env.DEFAULT_USER_PASSWORD || "12345678";
+  const defaultPassword = getDefaultPassword();
 
   return [
     {
@@ -61,20 +79,29 @@ function getSeedUsers() {
       ),
       accessRole: "super_admin",
       fellowshipId: null,
+      mustChangePassword: true,
     },
     {
       fullName: "Gaza Fellowship Admin",
       email: "gaza.admin@teensaloud.local",
-      passwordHash: bcrypt.hashSync(defaultPassword, 10),
+      passwordHash: bcrypt.hashSync(
+        process.env.FELLOWSHIP_ADMIN_PASSWORD || "GazaLF_2026!Secure",
+        10
+      ),
       accessRole: "fellowship_admin",
       fellowshipId: gazaFellowship ? gazaFellowship.id : null,
+      mustChangePassword: true,
     },
     {
       fullName: "Records Viewer",
       email: "viewer@teensaloud.local",
-      passwordHash: bcrypt.hashSync(defaultPassword, 10),
+      passwordHash: bcrypt.hashSync(
+        process.env.VIEWER_PASSWORD || "Viewer_2026!Secure",
+        10
+      ),
       accessRole: "viewer",
       fellowshipId: null,
+      mustChangePassword: true,
     },
   ];
 }
@@ -144,6 +171,7 @@ function initializeDatabase() {
       password_hash TEXT NOT NULL,
       access_role TEXT NOT NULL,
       fellowship_id INTEGER,
+      must_change_password INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (fellowship_id) REFERENCES fellowships(id)
     );
@@ -183,6 +211,11 @@ function initializeDatabase() {
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
   `);
+
+  const userColumns = db.prepare("PRAGMA table_info(users)").all();
+  if (!userColumns.some((column) => column.name === "must_change_password")) {
+    db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 1");
+  }
 
   seedReferenceData();
   seedUsers();
@@ -235,14 +268,15 @@ function seedReferenceData() {
 
 function seedUsers() {
   const upsertUser = db.prepare(`
-    INSERT INTO users (full_name, email, password_hash, access_role, fellowship_id)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO users (full_name, email, password_hash, access_role, fellowship_id, must_change_password)
+    VALUES (?, ?, ?, ?, ?, ?)
     ON CONFLICT(email)
     DO UPDATE SET
       full_name = excluded.full_name,
       password_hash = excluded.password_hash,
       access_role = excluded.access_role,
-      fellowship_id = excluded.fellowship_id
+      fellowship_id = excluded.fellowship_id,
+      must_change_password = excluded.must_change_password
   `);
 
   getSeedUsers().forEach((user) => {
@@ -251,7 +285,8 @@ function seedUsers() {
       user.email,
       user.passwordHash,
       user.accessRole,
-      user.fellowshipId
+      user.fellowshipId,
+      user.mustChangePassword ? 1 : 0
     );
   });
 }

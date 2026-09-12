@@ -14,6 +14,7 @@
         <a href="/members/<%= member.id %>/edit" class="button">Edit Record</a>
         <% if (member.approval_status === 'pending') { %>
           <form action="/members/<%= member.id %>/approve" method="post">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
             <button type="submit" class="button button-outline">Approve</button>
           </form>
         <% } %>

@@ -124,7 +124,7 @@ const COURSE_OPTIONS = [
   "LLB",
 ];
 
-const MEMBER_STATUSES = ["Active", "Inactive", "Alumni"];
+const MEMBER_STATUSES = ["Active", "Inactive", "Associate"];
 const GENDER_OPTIONS = ["Male", "Female"];
 const STUDY_LEVELS = ["100", "200", "300", "400", "500", "600"];
 const APPROVAL_STATUSES = ["pending", "approved", "rejected"];

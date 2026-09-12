@@ -10,10 +10,39 @@
       <p>Search, filter, approve, and export member records.</p>
     </div>
     <div class="button-row">
+      <a href="/members/new" class="button">Add Member</a>
       <a href="/exports/members.csv?<%= querystring %>" class="button button-outline">Export CSV</a>
       <a href="/exports/members.xlsx?<%= querystring %>" class="button">Export Excel</a>
     </div>
   </section>
+
+  <%
+    const activeFilterLabels = [];
+    if (filters.search) activeFilterLabels.push({ label: `Search: ${filters.search}` });
+    if (filters.fellowshipId) {
+      const fellowshipMatch = fellowships.find((item) => Number(item.id) === Number(filters.fellowshipId));
+      if (fellowshipMatch) activeFilterLabels.push({ label: `Fellowship: ${fellowshipMatch.name}` });
+    }
+    if (filters.gender) activeFilterLabels.push({ label: `Gender: ${filters.gender}` });
+    if (filters.courseId) {
+      const courseMatch = courses.find((item) => Number(item.id) === Number(filters.courseId));
+      if (courseMatch) activeFilterLabels.push({ label: `Course: ${courseMatch.name}` });
+    }
+    if (filters.status) activeFilterLabels.push({ label: `Status: ${filters.status}` });
+    if (filters.approvalStatus) activeFilterLabels.push({ label: `Approval: ${filters.approvalStatus}` });
+    if (filters.duplicateOnly) activeFilterLabels.push({ label: 'Possible duplicates only' });
+  %>
+
+  <% if (activeFilterLabels.length > 0) { %>
+    <section class="filter-summary" aria-label="Active filters">
+      <strong>Active filters</strong>
+      <div class="chips">
+        <% activeFilterLabels.forEach((filter) => { %>
+          <span class="chip"><%= filter.label %></span>
+        <% }) %>
+      </div>
+    </section>
+  <% } %>
 
   <section class="card">
     <form action="/members" method="get" class="filter-grid">
@@ -146,29 +175,30 @@
           <% } %>
           <% members.forEach((member) => { %>
             <tr>
-              <td>
+              <td data-label="Name">
                 <a href="/members/<%= member.id %>"><%= member.full_name %></a>
                 <% if (member.duplicate_flag) { %>
                   <div><span class="badge badge-warning">Duplicate flag</span></div>
                 <% } %>
               </td>
-              <td><a href="/fellowships/<%= member.fellowship_slug %>"><%= member.fellowship_name %></a></td>
-              <td><%= member.role_name || 'Regular Member' %></td>
-              <td><%= member.course_name %></td>
-              <td><%= member.level %></td>
-              <td><%= member.status %></td>
-              <td>
+              <td data-label="Fellowship"><a href="/fellowships/<%= member.fellowship_slug %>"><%= member.fellowship_name %></a></td>
+              <td data-label="Role"><%= member.role_name || 'Regular Member' %></td>
+              <td data-label="Course"><%= member.course_name %></td>
+              <td data-label="Level"><%= member.level %></td>
+              <td data-label="Status"><%= member.status %></td>
+              <td data-label="Approval">
                 <span class="badge badge-<%= member.approval_status === 'approved' ? 'success' : member.approval_status === 'pending' ? 'warning' : 'danger' %>">
                   <%= member.approval_status %>
                 </span>
               </td>
-              <td>
+              <td data-label="Actions">
                 <div class="button-row">
                   <a href="/members/<%= member.id %>" class="button button-small button-outline">View</a>
                   <% if (isManager && (currentUser.access_role === 'super_admin' || Number(currentUser.fellowship_id) === Number(member.fellowship_id))) { %>
                     <a href="/members/<%= member.id %>/edit" class="button button-small">Edit</a>
                     <% if (member.approval_status === 'pending') { %>
                       <form action="/members/<%= member.id %>/approve" method="post">
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
                         <button type="submit" class="button button-small">Approve</button>
                       </form>
                     <% } %>

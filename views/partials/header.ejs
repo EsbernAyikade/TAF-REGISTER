@@ -10,18 +10,24 @@
 
     <nav class="nav">
       <% if (currentUser) { %>
-        <a href="/dashboard">Dashboard</a>
-        <a href="/members">Members</a>
+        <a href="/dashboard" class="nav-link <%= currentPath === '/dashboard' ? 'active' : '' %>">Dashboard</a>
+        <a href="/members" class="nav-link <%= currentPath.startsWith('/members') || currentPath.startsWith('/exports') ? 'active' : '' %>">Members</a>
+        <a href="/members/new" class="nav-link <%= currentPath === '/members/new' ? 'active' : '' %>">Add Member</a>
+        <% if (currentUser.access_role === 'super_admin') { %>
+          <a href="/admin/users" class="nav-link <%= currentPath === '/admin/users' ? 'active' : '' %>">Users</a>
+          <a href="/members/import" class="nav-link <%= currentPath === '/members/import' ? 'active' : '' %>">Import</a>
+        <% } %>
         <% fellowships.forEach((fellowship) => { %>
           <% if (currentUser.access_role !== 'fellowship_admin' || Number(currentUser.fellowship_id) === Number(fellowship.id)) { %>
-            <a href="/fellowships/<%= fellowship.slug %>"><%= fellowship.name.replace(' Love Fellowship', '') %></a>
+            <a href="/fellowships/<%= fellowship.slug %>" class="nav-link <%= currentPath === '/fellowships/' + fellowship.slug ? 'active' : '' %>"><%= fellowship.name.replace(' Love Fellowship', '') %></a>
           <% } %>
         <% }) %>
-        <form action="/logout" method="post">
-          <button type="submit" class="button button-outline">Logout</button>
+        <form action="/logout" method="post" class="nav-logout">
+          <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+          <button type="submit" class="button button-outline button-small">Logout</button>
         </form>
       <% } else { %>
-        <a href="/login">Login</a>
+        <a href="/login" class="nav-link <%= currentPath === '/login' ? 'active' : '' %>">Login</a>
       <% } %>
     </nav>
   </div>

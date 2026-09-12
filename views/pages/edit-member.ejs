@@ -13,6 +13,7 @@
     </div>
 
     <form action="/members/<%= member.id %>/edit" method="post" class="stack">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
       <%- include('../partials/member-form', { member }) %>
       <div class="form-actions">
         <button type="submit" class="button">Save Changes</button>

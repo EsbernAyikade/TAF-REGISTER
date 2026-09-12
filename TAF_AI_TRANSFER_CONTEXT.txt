@@ -1,0 +1,665 @@
+Teens Aloud Foundation — AI Transfer Context
+===========================================
+
+Project goal
+------------
+Build a member registration and member-management web app for Teens Aloud Foundation, allowing:
+- public or shareable registration
+- protected member database access behind login
+- fellowship-specific views and stats
+- approval workflow for new members
+- attendance tracking per fellowship per week
+- exports to CSV/XLSX
+- dashboard, birthday logic, and role catalog support
+
+Current live app
+----------------
+- URL: https://taf-register.onrender.com
+- Admin login credentials (seeded for convenience):
+  - Super Admin: admin@teensaloud.local
+  - Fellowship Admin: gaza.admin@teensaloud.local
+  - Viewer: viewer@teensaloud.local
+  - Password for all seeded users: 12345678
+
+Important app behavior
+----------------------
+- The app is a single-site Express app with views, login, dashboard, member directory, fellowship pages, approval flow, and attendance tracking.
+- Public registration is public in a limited sense, but the full app/database is still protected behind login.
+- The app uses SQLite via better-sqlite3.
+- The app is designed for local + hosted deployment. Render-specific database path issues were fixed with a fallback.
+- Access flow:
+  - /login for authenticated admin access
+  - /register for member submissions
+  - /members and /dashboard require auth
+  - /health returns app health
+
+Core domain constants
+---------------------
+src/constants.js
+
+const LOVE_FELLOWSHIPS = [
+  { name: "Gaza Love Fellowship", slug: "gaza-love-fellowship" },
+  { name: "Main Campus Love Fellowship", slug: "main-campus-love-fellowship" },
+  { name: "Off Campus Love Fellowship", slug: "off-campus-love-fellowship" },
+  { name: "Kotei Love Fellowship", slug: "kotei-love-fellowship" },
+  { name: "Ayeduase Love Fellowship", slug: "ayeduase-love-fellowship" },
+  { name: "Brunei Love Fellowship", slug: "brunei-love-fellowship" },
+];
+
+const SUB_MINISTRIES = ["Aloud Choir", "Aloud Creative"];
+
+const EXECUTIVE_POSITIONS = ["President", "Secretary"];
+
+const REP_POSITIONS = [
+  "Aloud Choir Rep",
+  "Aloud Creative Rep",
+  "Wafer Rep",
+  "The Eye",
+  "TAF 1",
+  "SOS Rep",
+  "J Reach Rep",
+  "KKBM Rep",
+  "Menilo Rep",
+  "Evodia Rep",
+  "Aloud Care Rep",
+  "Globewide Missions Rep",
+  "Bank TAF",
+  "Campvista Rep",
+];
+
+const DIRECTOR_POSITIONS = [
+  "Director of Aloud Choir",
+  "Director of Aloud Creative",
+  "Director of Wafer",
+  "Director of The Eye",
+  "Director of TAF 1",
+  "Director of SOS",
+  "Director of J Reach",
+  "Director of KKBM",
+  "Director of Menilo",
+  "Director of Evodia",
+  "Director of Aloud Care",
+  "Director of Globewide Missions",
+  "Director of Bank TAF",
+  "Director of Campvista",
+];
+
+const GLOBAL_DIRECTOR_ROLES = [
+  { roleType: "Director", positionName: "RD", scopeType: "regional", displayName: "RD - Regional Director" },
+  { roleType: "Director", positionName: "CD", scopeType: "country", displayName: "CD - Country Director" },
+];
+
+const COURSE_OPTIONS = [
+  "BSc. Aerospace Engineering",
+  "BSc. Agricultural Biotechnology",
+  "BSc. Agricultural Engineering",
+  "BSc. Agriculture",
+  "BSc. Architecture",
+  "BSc. Biochemistry",
+  "BSc. Computer Science",
+  "BSc. Information Technology",
+  "BSc. Nursing",
+  "Doctor of Pharmacy",
+  "Doctor of Veterinary Medicine",
+  "LLB",
+  // truncated in source but full list exists in the project file
+];
+
+const MEMBER_STATUSES = ["Active", "Inactive", "Alumni"];
+const GENDER_OPTIONS = ["Male", "Female"];
+const STUDY_LEVELS = ["100", "200", "300", "400", "500", "600"];
+const APPROVAL_STATUSES = ["pending", "approved", "rejected"];
+
+Database design and seed behavior
+--------------------------------
+src/database.js
+
+const configuredDatabasePath = process.env.DATABASE_PATH;
+const dataDirectory = process.env.DATA_DIR
+  ? path.resolve(process.env.DATA_DIR)
+  : path.join(__dirname, "..", "data");
+const defaultDatabasePath = path.join(dataDirectory, "teens-aloud.db");
+
+function resolveDatabasePath() {
+  if (!configuredDatabasePath) {
+    return defaultDatabasePath;
+  }
+
+  const candidate = path.resolve(configuredDatabasePath);
+  try {
+    const databaseDirectory = path.dirname(candidate);
+    if (!fs.existsSync(databaseDirectory)) {
+      fs.mkdirSync(databaseDirectory, { recursive: true });
+    }
+    return candidate;
+  } catch (error) {
+    console.warn(
+      `Falling back to local database path because DATABASE_PATH was unusable: ${error.message}`
+    );
+    return defaultDatabasePath;
+  }
+}
+
+const databasePath = resolveDatabasePath();
+
+if (!fs.existsSync(path.dirname(databasePath))) {
+  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
+}
+
+const db = new Database(databasePath);
+db.pragma("journal_mode = WAL");
+db.pragma("foreign_keys = ON");
+
+Key tables created:
+- fellowships
+- sub_ministries
+- courses
+- roles
+- members
+- users
+- attendance_sessions
+- attendance_records
+- audit_logs
+
+Example schema fragment:
+
+CREATE TABLE IF NOT EXISTS members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  full_name TEXT NOT NULL,
+  gender TEXT NOT NULL,
+  birth_day INTEGER NOT NULL,
+  birth_month INTEGER NOT NULL,
+  hostel TEXT NOT NULL,
+  course_id INTEGER NOT NULL,
+  fellowship_id INTEGER NOT NULL,
+  sub_ministry_id INTEGER,
+  role_id INTEGER,
+  phone TEXT NOT NULL,
+  email TEXT NOT NULL,
+  level TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'Active',
+  approval_status TEXT NOT NULL DEFAULT 'pending',
+  duplicate_flag INTEGER NOT NULL DEFAULT 0,
+  duplicate_notes TEXT,
+  joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  approved_at TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (course_id) REFERENCES courses(id),
+  FOREIGN KEY (fellowship_id) REFERENCES fellowships(id),
+  FOREIGN KEY (sub_ministry_id) REFERENCES sub_ministries(id),
+  FOREIGN KEY (role_id) REFERENCES roles(id)
+);
+
+Seed users:
+
+function getSeedUsers() {
+  const gazaFellowship = db
+    .prepare("SELECT id FROM fellowships WHERE slug = ?")
+    .get("gaza-love-fellowship");
+  const defaultPassword = process.env.DEFAULT_USER_PASSWORD || "12345678";
+
+  return [
+    {
+      fullName: "System Super Admin",
+      email: process.env.SUPER_ADMIN_EMAIL || "admin@teensaloud.local",
+      passwordHash: bcrypt.hashSync(
+        process.env.SUPER_ADMIN_PASSWORD || defaultPassword,
+        10
+      ),
+      accessRole: "super_admin",
+      fellowshipId: null,
+    },
+    {
+      fullName: "Gaza Fellowship Admin",
+      email: "gaza.admin@teensaloud.local",
+      passwordHash: bcrypt.hashSync(defaultPassword, 10),
+      accessRole: "fellowship_admin",
+      fellowshipId: gazaFellowship ? gazaFellowship.id : null,
+    },
+    {
+      fullName: "Records Viewer",
+      email: "viewer@teensaloud.local",
+      passwordHash: bcrypt.hashSync(defaultPassword, 10),
+      accessRole: "viewer",
+      fellowshipId: null,
+    },
+  ];
+}
+
+Authentication and authorization
+--------------------------------
+src/app.js
+
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "teens-aloud-session-secret",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: isProduction,
+      maxAge: 1000 * 60 * 60 * 12,
+    },
+  })
+);
+
+function requireAuth(req, res, next) {
+  if (!req.currentUser) {
+    setFlash(req, "warning", "Please sign in to access the member database.");
+    return res.redirect("/login");
+  }
+  return next();
+}
+
+function isSuperAdmin(user) {
+  return user && user.access_role === "super_admin";
+}
+
+function canManageFellowship(user, fellowshipId) {
+  return Boolean(
+    user &&
+      (user.access_role === "super_admin" ||
+        (user.access_role === "fellowship_admin" && Number(user.fellowship_id) === Number(fellowshipId)))
+  );
+}
+
+Login route:
+
+app.post("/login", (req, res) => {
+  const email = String(req.body.email || "").trim().toLowerCase();
+  const password = String(req.body.password || "");
+  const user = db
+    .prepare("SELECT * FROM users WHERE LOWER(email) = ?")
+    .get(email);
+
+  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    setFlash(req, "error", "Invalid email or password.");
+    return res.redirect("/login");
+  }
+
+  req.session.userId = user.id;
+  setFlash(req, "success", `Welcome back, ${user.full_name}.`);
+  return res.redirect("/dashboard");
+});
+
+Registration flow
+-----------------
+
+app.post("/register", requireAuth, (req, res) => {
+  const payload = parseMemberPayload(req.body);
+  const validationError = validateMemberPayload(payload);
+
+  if (validationError) {
+    setFlash(req, "error", validationError);
+    return res.status(422).render("pages/register", { ... });
+  }
+
+  const duplicates = detectDuplicateMembers(payload);
+  const duplicateNotes = duplicates.length
+    ? duplicates.map((item) => `${item.full_name} (${item.email}, ${item.phone})`).join("; ")
+    : null;
+
+  const result = db
+    .prepare(
+      `
+        INSERT INTO members (
+          full_name, gender, birth_day, birth_month, hostel,
+          course_id, fellowship_id, sub_ministry_id, role_id,
+          phone, email, level, status, approval_status,
+          duplicate_flag, duplicate_notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+      `
+    )
+    .run(
+      payload.fullName,
+      payload.gender,
+      payload.birthDay,
+      payload.birthMonth,
+      payload.hostel,
+      payload.courseId,
+      payload.fellowshipId,
+      payload.subMinistryId,
+      payload.roleId,
+      payload.phone,
+      payload.email,
+      payload.level,
+      payload.status,
+      duplicates.length ? 1 : 0,
+      duplicateNotes
+    );
+
+  logAudit(null, "member_registered", "member", result.lastInsertRowid, duplicateNotes);
+  setFlash(
+    req,
+    duplicates.length ? "warning" : "success",
+    duplicates.length
+      ? "Registration saved for review and flagged as a possible duplicate."
+      : "Registration submitted successfully. An admin will approve it before it appears in the directory."
+  );
+  return res.redirect("/register");
+});
+
+Duplicate detection is based on exact match of full name, email, or phone.
+
+Member directory and filters
+---------------------------
+Members are filtered by:
+- search
+- fellowshipId
+- subMinistryId
+- roleId
+- gender
+- courseId
+- level
+- hostel
+- status
+- approvalStatus
+- duplicateOnly
+
+Key query builder:
+
+function buildMembersQuery(filters, currentUser) {
+  const conditions = [];
+  const params = [];
+
+  if (currentUser && currentUser.access_role === "viewer") {
+    conditions.push("members.approval_status = 'approved'");
+  }
+
+  if (filters.search) {
+    conditions.push(
+      "(LOWER(members.full_name) LIKE ? OR LOWER(members.hostel) LIKE ? OR LOWER(members.phone) LIKE ? OR LOWER(members.email) LIKE ?)"
+    );
+    const term = `%${filters.search.toLowerCase()}%`;
+    params.push(term, term, term, term);
+  }
+
+  if (filters.fellowshipId) {
+    conditions.push("members.fellowship_id = ?");
+    params.push(filters.fellowshipId);
+  }
+
+  if (filters.subMinistryId) {
+    conditions.push("members.sub_ministry_id = ?");
+    params.push(filters.subMinistryId);
+  }
+
+  if (filters.roleId) {
+    conditions.push("members.role_id = ?");
+    params.push(filters.roleId);
+  }
+
+  if (filters.gender) {
+    conditions.push("members.gender = ?");
+    params.push(filters.gender);
+  }
+
+  if (filters.courseId) {
+    conditions.push("members.course_id = ?");
+    params.push(filters.courseId);
+  }
+
+  if (filters.level) {
+    conditions.push("members.level = ?");
+    params.push(filters.level);
+  }
+
+  if (filters.hostel) {
+    conditions.push("LOWER(members.hostel) LIKE ?");
+    params.push(`%${filters.hostel.toLowerCase()}%`);
+  }
+
+  if (filters.status) {
+    conditions.push("members.status = ?");
+    params.push(filters.status);
+  }
+
+  if (filters.approvalStatus) {
+    conditions.push("members.approval_status = ?");
+    params.push(filters.approvalStatus);
+  }
+
+  if (currentUser && currentUser.access_role === "fellowship_admin") {
+    conditions.push("members.fellowship_id = ?");
+    params.push(currentUser.fellowship_id);
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const sql = `
+    SELECT members.*,
+           courses.name AS course_name,
+           fellowships.name AS fellowship_name,
+           fellowships.slug AS fellowship_slug,
+           sub_ministries.name AS sub_ministry_name,
+           roles.display_name AS role_name,
+           roles.role_type
+    FROM members
+    JOIN courses ON courses.id = members.course_id
+    JOIN fellowships ON fellowships.id = members.fellowship_id
+    LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
+    LEFT JOIN roles ON roles.id = members.role_id
+    ${whereClause}
+    ORDER BY
+      CASE members.approval_status
+        WHEN 'pending' THEN 0
+        WHEN 'approved' THEN 1
+        ELSE 2
+      END,
+      members.full_name
+  `;
+
+  return { sql, params };
+}
+
+Fellowship pages and attendance logic
+------------------------------------
+The fellowship page loads all approved members for a fellowship, groups them by leaders vs non-leaders, computes counts, and exposes weekly attendance headline and history:
+
+app.get("/fellowships/:slug", requireAuth, (req, res) => {
+  const fellowship = db
+    .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
+    .get(req.params.slug);
+
+  const members = db
+    .prepare(
+      `
+        SELECT members.*, courses.name AS course_name, sub_ministries.name AS sub_ministry_name,
+               roles.display_name AS role_name, roles.role_type
+        FROM members
+        JOIN courses ON courses.id = members.course_id
+        LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
+        LEFT JOIN roles ON roles.id = members.role_id
+        WHERE members.fellowship_id = ?
+          AND members.approval_status = 'approved'
+        ORDER BY
+          CASE roles.role_type
+            WHEN 'Executive' THEN 0
+            WHEN 'Director' THEN 1
+            WHEN 'Rep' THEN 2
+            ELSE 3
+          END,
+          members.full_name
+      `
+    )
+    .all(fellowship.id);
+
+  const leaders = {
+    executives: members.filter((member) => member.role_type === "Executive"),
+    directors: members.filter((member) => member.role_type === "Director"),
+    reps: members.filter((member) => member.role_type === "Rep"),
+  };
+
+  const attendanceHeadline = getAttendanceSummaryForWeek(currentWeekStart).find(
+    (item) => Number(item.id) === Number(fellowship.id)
+  );
+
+  res.render("pages/fellowship", {
+    pageTitle: fellowship.name,
+    fellowship,
+    members,
+    leaders,
+    stats,
+    currentWeekStart,
+    currentWeekEnd,
+    attendanceHeadline,
+    trend,
+    canManage: canManageFellowship(req.currentUser, fellowship.id),
+  });
+});
+
+Attendance record update flow:
+
+app.post("/fellowships/:slug/attendance", requireAuth, requireManagerForFellowship, (req, res) => {
+  const fellowship = db
+    .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
+    .get(req.params.slug);
+  const weekStart = getWeekStart(String(req.body.weekStart || ""));
+  const weekEnd = getWeekEnd(weekStart);
+
+  const selectedIds = new Set(
+    Array.isArray(req.body.presentMemberIds)
+      ? req.body.presentMemberIds.map((id) => Number(id))
+      : req.body.presentMemberIds
+      ? [Number(req.body.presentMemberIds)]
+      : []
+  );
+
+  const transaction = db.transaction(() => {
+    db.prepare(
+      `
+        INSERT INTO attendance_sessions (fellowship_id, week_start, week_end, recorded_by_user_id)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(fellowship_id, week_start)
+        DO UPDATE SET
+          week_end = excluded.week_end,
+          recorded_by_user_id = excluded.recorded_by_user_id,
+          updated_at = CURRENT_TIMESTAMP
+      `
+    ).run(fellowship.id, weekStart, weekEnd, req.currentUser.id);
+
+    const sessionRow = db
+      .prepare(
+        `
+          SELECT id FROM attendance_sessions
+          WHERE fellowship_id = ? AND week_start = ?
+        `
+      )
+      .get(fellowship.id, weekStart);
+
+    const upsertRecord = db.prepare(
+      `
+        INSERT INTO attendance_records (attendance_session_id, member_id, present)
+        VALUES (?, ?, ?)
+        ON CONFLICT(attendance_session_id, member_id)
+        DO UPDATE SET
+          present = excluded.present,
+          marked_at = CURRENT_TIMESTAMP
+      `
+    );
+
+    activeMembers.forEach((member) => {
+      upsertRecord.run(sessionRow.id, member.id, selectedIds.has(member.id) ? 1 : 0);
+    });
+  });
+
+  transaction();
+  setFlash(req, "success", `Attendance saved for ${fellowship.name} (${weekStart}).`);
+  return res.redirect(`/fellowships/${fellowship.slug}/attendance?weekStart=${weekStart}`);
+});
+
+Export routes
+-------------
+The app exports filter-aware CSV and XLSX files:
+
+app.get("/exports/members.csv", requireAuth, (req, res) => {
+  const filters = {...};
+  const { sql, params } = buildMembersQuery(filters, req.currentUser);
+  const members = db.prepare(sql).all(...params);
+
+  const header = [
+    "Full Name",
+    "Gender",
+    "Birthday",
+    "Hostel",
+    "Course",
+    "Love Fellowship",
+    "Sub-ministry",
+    "Role",
+    "Phone",
+    "Email",
+    "Level",
+    "Status",
+    "Approval Status",
+    "Joined At",
+  ];
+
+  const csv = [header, ...rows].map((row) => row.map((value) => `"${String(value ?? "").replaceAll('"', '""')}"`).join(",")).join("\n");
+
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", 'attachment; filename="teens-aloud-members.csv"');
+  return res.send(csv);
+});
+
+Render deployment issue and fix
+------------------------------
+This was a real deployment blocker that had to be fixed:
+
+Symptom:
+- Render deploy failed with permission denied on /var/data/teens-aloud.dbdata
+- Startup crashed before the app could serve requests.
+
+Root cause:
+- DATABASE_PATH was set to a directory Render does not allow to write.
+
+Fix implemented in src/database.js:
+- detect unusable DATABASE_PATH
+- create parent dirs if possible
+- if an error is thrown, fallback to a local writable path
+- continue startup without crashing
+
+This is why the app now boots correctly on Render.
+
+Git/GitHub status
+-----------------
+The repo was set up and pushed to GitHub via SSH because HTTPS auth failed due to repo permissions / PAT restrictions.
+Key remote fix:
+
+git remote set-url origin git@github.com:EsbernAyikade/TAF-REGISTER.git
+
+the repo is then accessible via SSH and the remote was verified working.
+
+What was done in the project
+----------------------------
+- Built the complete member registration + management app for Teens Aloud Foundation
+- Added protected login for database access
+- Added seeded admin/viewer accounts with default password 12345678
+- Added role catalog and fellowship-based member structures
+- Added duplicate detection and approval workflow
+- Added attendance tracking per fellowship and week
+- Added dashboard stats and fellowship overviews
+- Added CSV/XLSX exports
+- Added birthday logic and member detail views
+- Fixed the Render database path crash
+- Verified the app is live at https://taf-register.onrender.com
+- Confirmed /health returns { ok: true, publicRegistrationOnly: false }
+
+One-line status
+---------------
+The app is live, usable from a public URL, and protected by login on the member database side while allowing registration and admin management through the same hosted site.
+
+File reference for this project
+------------------------------
+- src/app.js
+- src/database.js
+- src/constants.js
+- package.json
+- README.md
+- render.yaml
+
+If you want the next AI to continue work, give it this file plus the live URL and the project repo URL.
+
+Project repo: https://github.com/EsbernAyikade/TAF-REGISTER
+Live app: https://taf-register.onrender.com

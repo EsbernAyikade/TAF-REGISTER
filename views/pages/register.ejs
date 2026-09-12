@@ -8,8 +8,8 @@
       <span class="eyebrow">Registration Portal</span>
       <h1>Join Teens Aloud Foundation</h1>
       <p>
-        Signed-in leaders can register members and have each record reviewed, approved, and managed by the
-        Love Fellowship leadership team.
+        Register to become part of a Love Fellowship and help the foundation stay connected for care,
+        attendance, and leadership updates.
       </p>
       <ul class="feature-list">
         <li>Birthday tracking using day and month only</li>
@@ -20,9 +20,8 @@
     <div class="hero-card">
       <img src="/images/love-fellowships.jpg" alt="Love Fellowships artwork" class="hero-image" />
       <p class="privacy-note">
-        Privacy notice: submitted information is stored for pastoral care, fellowship
-        administration, and attendance reporting. The searchable database is restricted to
-        authorized users.
+        Privacy notice: submitted information is stored for pastoral care, fellowship administration,
+        and attendance reporting. The searchable database is restricted to authorized users.
       </p>
     </div>
   </section>
@@ -37,6 +36,8 @@
     </div>
 
     <form action="/register" method="post" class="stack">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+      <input type="text" name="website" class="hidden-field" tabindex="-1" autocomplete="off" />
       <%- include('../partials/member-form', { member }) %>
       <div class="form-actions">
         <button type="submit" class="button">Submit Registration</button>

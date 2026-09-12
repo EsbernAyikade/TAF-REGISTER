@@ -12,28 +12,32 @@
       </p>
     </div>
     <div class="button-row">
-      <a href="/members" class="button">Open Directory</a>
+      <a href="/members/new" class="button">Add Member</a>
+      <a href="/members" class="button button-outline">Open Directory</a>
       <a href="/exports/members.xlsx" class="button button-outline">Export Excel</a>
     </div>
   </section>
 
   <section class="stats-grid">
-    <article class="stat-card">
+    <article class="stat-card accent-blue">
       <span>Total Members</span>
       <strong><%= totalMembers %></strong>
+      <small>Active roster</small>
     </article>
-    <article class="stat-card">
+    <article class="stat-card accent-orange">
       <span>Birthdays This Week</span>
       <strong><%= birthdaysThisWeek.length %></strong>
+      <small>Celebrate members</small>
     </article>
-    <article class="stat-card">
+    <article class="stat-card accent-slate">
       <span>Week Range</span>
       <strong><%= formatDate(currentWeekStart) %></strong>
       <small>to <%= formatDate(currentWeekEnd) %></small>
     </article>
-    <article class="stat-card">
+    <article class="stat-card accent-green">
       <span>Pending Approvals</span>
       <strong><%= pendingApprovals.length %></strong>
+      <small>Needs review</small>
     </article>
   </section>
 
@@ -153,6 +157,7 @@
                 <span class="badge badge-warning">Possible duplicate</span>
               <% } %>
               <form action="/members/<%= item.id %>/approve" method="post">
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
                 <button type="submit" class="button">Approve</button>
               </form>
             </div>

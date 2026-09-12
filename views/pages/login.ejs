@@ -8,10 +8,12 @@
       <div>
         <span class="eyebrow">Secure Access</span>
         <h1>Login to the Member Database</h1>
+        <p class="muted">Access the TAF member records, fellowship updates, and attendance reporting.</p>
       </div>
     </div>
 
     <form action="/login" method="post" class="stack">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
       <label>
         <span>Email</span>
         <input type="email" name="email" required />
@@ -30,7 +32,7 @@
       <p>Super Admin: admin@teensaloud.local</p>
       <p>Fellowship Admin: gaza.admin@teensaloud.local</p>
       <p>Viewer: viewer@teensaloud.local</p>
-      <p>Default password: 12345678</p>
+      <p>Use the strong password values configured in your environment or .env file.</p>
     </div>
   </section>
 </main>

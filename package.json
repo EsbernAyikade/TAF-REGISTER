@@ -5,18 +5,20 @@
   "main": "src/app.js",
   "scripts": {
     "start": "node src/app.js",
-    "share": "node src/run-public-share.js",
-    "test": "node --check src/app.js && node --check src/database.js && node --check src/constants.js"
+    "test": "node --check src/app.js && node --check src/database.js && node --check src/constants.js && node --test --test-reporter=spec test/*.test.js"
   },
   "keywords": [],
   "type": "commonjs",
   "dependencies": {
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^13.0.3",
+    "csrf": "^3.1.0",
+    "csurf": "^1.11.0",
     "ejs": "^6.0.1",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
     "express-session": "^1.19.0",
-    "localtunnel": "^2.0.2"
+    "multer": "^2.3.0"
   }
 }
