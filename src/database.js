@@ -13,14 +13,32 @@ const configuredDatabasePath = process.env.DATABASE_PATH;
 const dataDirectory = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "..", "data");
-const databasePath = configuredDatabasePath
-  ? path.resolve(configuredDatabasePath)
-  : path.join(dataDirectory, "teens-aloud.db");
+const defaultDatabasePath = path.join(dataDirectory, "teens-aloud.db");
 
-const databaseDirectory = path.dirname(databasePath);
+function resolveDatabasePath() {
+  if (!configuredDatabasePath) {
+    return defaultDatabasePath;
+  }
 
-if (!fs.existsSync(databaseDirectory)) {
-  fs.mkdirSync(databaseDirectory, { recursive: true });
+  const candidate = path.resolve(configuredDatabasePath);
+  try {
+    const databaseDirectory = path.dirname(candidate);
+    if (!fs.existsSync(databaseDirectory)) {
+      fs.mkdirSync(databaseDirectory, { recursive: true });
+    }
+    return candidate;
+  } catch (error) {
+    console.warn(
+      `Falling back to local database path because DATABASE_PATH was unusable: ${error.message}`
+    );
+    return defaultDatabasePath;
+  }
+}
+
+const databasePath = resolveDatabasePath();
+
+if (!fs.existsSync(path.dirname(databasePath))) {
+  fs.mkdirSync(path.dirname(databasePath), { recursive: true });
 }
 
 const db = new Database(databasePath);
