@@ -53,10 +53,15 @@ db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
 function requireSharedAccessPassword() {
-  const password = process.env.SHARED_ACCESS_PASSWORD || (isProduction ? null : "TafAccess_2026");
+  const password =
+    process.env.SHARED_ACCESS_PASSWORD ||
+    process.env.SUPER_ADMIN_PASSWORD ||
+    (isProduction ? null : "TafAccess_2026");
 
   if (isProduction && !password) {
-    throw new Error("SHARED_ACCESS_PASSWORD must be set in production.");
+    throw new Error(
+      "SHARED_ACCESS_PASSWORD (or legacy SUPER_ADMIN_PASSWORD) must be set in production."
+    );
   }
 
   return password;

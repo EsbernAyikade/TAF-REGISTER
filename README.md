@@ -38,7 +38,7 @@ This app uses one shared password for the whole team:
 - anyone with the password gets full access to members, attendance, import, and export
 - the password can be changed inside the app at `/account/change-password`
 
-For safety, the password is stored as a bcrypt hash in the database after first boot. `SHARED_ACCESS_PASSWORD` is only used to initialize a fresh database, so changing the env var later does not overwrite an in-app password change.
+For safety, the password is stored as a bcrypt hash in the database after first boot. `SHARED_ACCESS_PASSWORD` is only used to initialize a fresh database, so changing the env var later does not overwrite an in-app password change. For older deployments that have not added `SHARED_ACCESS_PASSWORD` yet, the app will temporarily fall back to `SUPER_ADMIN_PASSWORD` during startup so the service can still boot while you migrate the env var name.
 
 Because access is shared, audit logs still record what happened, but no longer identify which individual person performed the action.
 
@@ -59,7 +59,7 @@ This project is prepared for deployment on Render with a persistent disk and a s
    - `DATA_DIR=/var/data`
 5. Deploy.
 
-The Render blueprint in this repo is configured to mount the database disk at `/var/data` and back up the SQLite file in a daily cron job. The app refuses to start in production if `SESSION_SECRET` or `SHARED_ACCESS_PASSWORD` is missing.
+The Render blueprint in this repo is configured to mount the database disk at `/var/data` and back up the SQLite file in a daily cron job. The app refuses to start in production if `SESSION_SECRET` is missing, or if neither `SHARED_ACCESS_PASSWORD` nor the legacy `SUPER_ADMIN_PASSWORD` is set.
 
 ## Main routes
 
