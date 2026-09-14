@@ -107,29 +107,8 @@ function isValidBirthDate(day, month) {
   return day <= monthDayLimits[month];
 }
 
-function canAccessMember(user, member) {
-  if (!user || !member) {
-    return false;
-  }
-
-  if (user.access_role === "super_admin") {
-    return true;
-  }
-
-  if (user.access_role === "viewer" && member.approval_status === "approved") {
-    return true;
-  }
-
-  if (user.access_role === "fellowship_admin") {
-    return Number(user.fellowship_id) === Number(member.fellowship_id);
-  }
-
-  return false;
-}
-
 module.exports = {
   areLikelyNameMatches,
-  canAccessMember,
   isValidBirthDate,
   normalizeName,
   normalizeNameKey,

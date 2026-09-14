@@ -6,17 +6,13 @@
   <section class="section-heading">
     <div>
       <span class="eyebrow">Dashboard</span>
-      <h1>Welcome, <%= currentUser.full_name %></h1>
-      <p>
-        Weekly overview for <%= currentUser.access_role === 'fellowship_admin' ? currentUser.fellowship_name : 'all Love Fellowships' %>.
-      </p>
+      <h1>TAF Register</h1>
+      <p>See members, take attendance, and keep fellowship records up to date.</p>
     </div>
     <div class="button-row">
-      <a href="/members/new" class="button">Add Member</a>
-      <a href="/members" class="button button-outline">Open Directory</a>
-      <% if (currentUser.access_role === 'super_admin') { %>
-        <a href="/members/import" class="button button-outline">Bulk Import</a>
-      <% } %>
+      <a href="/members" class="button">Members</a>
+      <a href="/fellowships" class="button button-outline">Fellowships</a>
+      <a href="/members/import" class="button button-outline">Import Register</a>
       <a href="/exports/members.xlsx" class="button button-outline">Export Excel</a>
     </div>
   </section>
@@ -38,9 +34,9 @@
       <small>to <%= formatDate(currentWeekEnd) %></small>
     </article>
     <article class="stat-card accent-green">
-      <span>Pending Approvals</span>
-      <strong><%= pendingApprovals.length %></strong>
-      <small>Needs review</small>
+      <span>Attendance This Week</span>
+      <strong><%= totalAttendanceThisWeek %></strong>
+      <small>Total present marks saved</small>
     </article>
   </section>
 
@@ -159,44 +155,6 @@
       </div>
     </article>
   </section>
-
-  <% if (pendingApprovals.length > 0) { %>
-    <section class="card">
-      <div class="section-heading">
-        <div>
-          <h2>Pending Registrations</h2>
-          <p>New registrations waiting for approval.</p>
-        </div>
-      </div>
-      <div class="list-stack">
-        <% pendingApprovals.forEach((item) => { %>
-          <div class="list-item">
-            <div>
-              <strong><a href="/members/<%= item.id %>"><%= item.full_name %></a></strong>
-              <p><%= item.fellowship_name %></p>
-            </div>
-            <div class="button-row">
-              <% if (item.duplicate_flag) { %>
-                <span class="badge badge-warning">Possible duplicate</span>
-              <% } %>
-              <form action="/members/<%= item.id %>/approve" method="post">
-                <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
-                <button type="submit" class="button">Approve</button>
-              </form>
-              <form
-                action="/members/<%= item.id %>/reject"
-                method="post"
-                data-confirm="Reject <%= item.full_name %>'s registration?"
-              >
-                <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
-                <button type="submit" class="button button-outline">Reject</button>
-              </form>
-            </div>
-          </div>
-        <% }) %>
-      </div>
-    </section>
-  <% } %>
 
   <section class="card">
     <div class="section-heading">

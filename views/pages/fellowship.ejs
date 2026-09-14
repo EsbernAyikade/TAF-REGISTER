@@ -6,7 +6,7 @@
   <nav class="page-breadcrumbs" aria-label="Breadcrumb">
     <a href="/dashboard">Dashboard</a>
     <span class="divider">/</span>
-    <a href="/members">Members</a>
+    <a href="/fellowships">Fellowships</a>
     <span class="divider">/</span>
     <span><%= fellowship.name %></span>
   </nav>
@@ -19,9 +19,7 @@
     </div>
     <div class="button-row">
       <a href="/members?fellowshipId=<%= fellowship.id %>" class="button button-outline">View Directory Slice</a>
-      <% if (currentUser.access_role === 'super_admin') { %>
-        <a href="/members/import" class="button button-outline">Import Register</a>
-      <% } %>
+      <a href="/members/import" class="button button-outline">Import Register</a>
       <% if (canManage) { %>
         <a href="/fellowships/<%= fellowship.slug %>/attendance" class="button button-accent">Mark Attendance</a>
       <% } %>
@@ -101,7 +99,7 @@
     <div class="section-heading">
       <div>
         <h2>Members</h2>
-        <p>Approved members belonging to this Love Fellowship.</p>
+        <p>Members belonging to this Love Fellowship.</p>
       </div>
     </div>
     <div class="table-wrap">
@@ -121,7 +119,7 @@
               <td colspan="5">
                 <div class="empty-state">
                   <strong>No members yet</strong>
-                  <p class="muted">Approved members assigned to this Love Fellowship will show up here.</p>
+                  <p class="muted">Members assigned to this Love Fellowship will show up here.</p>
                 </div>
               </td>
             </tr>

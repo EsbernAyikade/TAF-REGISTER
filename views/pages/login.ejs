@@ -22,16 +22,11 @@
     <section class="card auth-card" aria-label="Login form">
       <div class="auth-brand">
         <span class="eyebrow">Secure Access</span>
-        <h1>Sign in to TAF Register</h1>
+        <h1>Enter the access password</h1>
       </div>
 
       <form action="/login" method="post" class="stack" novalidate>
         <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
-
-        <label>
-          <span>Email</span>
-          <input type="email" name="email" required autocomplete="email" placeholder="name@teensaloud.org" />
-        </label>
 
         <label>
           <span>Password</span>
@@ -44,14 +39,7 @@
         <button type="submit" class="button button-accent">Log In</button>
       </form>
 
-      <p class="fine-print">Forgot password? Contact your administrator for help.</p>
-
-      <% if (typeof isProduction !== 'undefined' && !isProduction) { %>
-        <div class="hint-box">
-          <strong>Local development only</strong>
-          <p>Seeded accounts use the password values configured in your local .env file.</p>
-        </div>
-      <% } %>
+      <p class="fine-print">Need the password? Ask the person who manages your fellowship records.</p>
     </section>
   </main>
 

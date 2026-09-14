@@ -52,7 +52,7 @@
 
         <div class="checklist" id="attendance-checklist">
           <% if (members.length === 0) { %>
-            <p class="muted">No active approved members are available to mark.</p>
+            <p class="muted">No active members are available to mark.</p>
           <% } %>
           <% members.forEach((member) => { %>
             <label class="checkbox-row member-row" data-member-name="<%= member.full_name.toLowerCase() %>">

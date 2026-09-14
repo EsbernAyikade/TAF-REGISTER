@@ -1,0 +1,35 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page">
+  <section class="section-heading">
+    <div>
+      <span class="eyebrow">Love Fellowships</span>
+      <h1>Fellowships</h1>
+      <p>Open a fellowship to view members, leadership, and weekly attendance.</p>
+    </div>
+  </section>
+
+  <section class="three-column">
+    <% fellowships.forEach((fellowship) => { %>
+      <article class="card">
+        <div class="section-heading">
+          <div>
+            <h2><%= fellowship.name %></h2>
+            <p><%= fellowship.memberCount %> member<%= fellowship.memberCount === 1 ? '' : 's' %></p>
+          </div>
+        </div>
+        <p class="muted">
+          <%= fellowship.attendance ? fellowship.attendance.headline : `No attendance captured yet for ${fellowship.name}.` %>
+        </p>
+        <div class="button-row">
+          <a href="/fellowships/<%= fellowship.slug %>" class="button">Open Fellowship</a>
+          <a href="/fellowships/<%= fellowship.slug %>/attendance" class="button button-outline">Attendance</a>
+        </div>
+      </article>
+    <% }) %>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>

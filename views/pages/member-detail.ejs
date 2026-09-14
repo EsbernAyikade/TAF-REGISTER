@@ -12,20 +12,6 @@
     <% if (canManage) { %>
       <div class="button-row">
         <a href="/members/<%= member.id %>/edit" class="button">Edit Record</a>
-        <% if (member.approval_status === 'pending') { %>
-          <form action="/members/<%= member.id %>/approve" method="post">
-            <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
-            <button type="submit" class="button button-outline">Approve</button>
-          </form>
-          <form
-            action="/members/<%= member.id %>/reject"
-            method="post"
-            data-confirm="Reject <%= member.full_name %>'s registration? This can be reversed later by editing the record."
-          >
-            <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
-            <button type="submit" class="button button-outline">Reject</button>
-          </form>
-        <% } %>
       </div>
     <% } %>
   </section>
@@ -44,9 +30,7 @@
         <div><dt>Email</dt><dd><%= member.email || '—' %></dd></div>
         <div><dt>Level</dt><dd><%= member.level || '—' %></dd></div>
         <div><dt>Status</dt><dd><%= member.status %></dd></div>
-        <div><dt>Approval</dt><dd><%= member.approval_status %></dd></div>
         <div><dt>Date Joined</dt><dd><%= formatDate(member.joined_at) %></dd></div>
-        <div><dt>Approved At</dt><dd><%= formatDate(member.approved_at) %></dd></div>
       </dl>
       <% if (member.duplicate_flag && member.duplicate_notes) { %>
         <div class="notice-box warning-box">

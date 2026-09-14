@@ -15,6 +15,8 @@ const dataDirectory = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.join(__dirname, "..", "data");
 const defaultDatabasePath = path.join(dataDirectory, "teens-aloud.db");
+const SHARED_ACCESS_PASSWORD_KEY = "shared_access_password_hash";
+const INTERNAL_ACTOR_EMAIL = "shared-access@teensaloud.local";
 
 if (isProduction && !process.env.SESSION_SECRET) {
   throw new Error("SESSION_SECRET must be set in production.");
@@ -50,74 +52,14 @@ const db = new Database(databasePath);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
 
-function getDefaultPassword() {
-  const password =
-    process.env.DEFAULT_USER_PASSWORD ||
-    process.env.SUPER_ADMIN_PASSWORD ||
-    (isProduction ? null : "Taf_2026!Secure");
+function requireSharedAccessPassword() {
+  const password = process.env.SHARED_ACCESS_PASSWORD || (isProduction ? null : "TafAccess_2026");
 
   if (isProduction && !password) {
-    throw new Error("DEFAULT_USER_PASSWORD must be set in production.");
+    throw new Error("SHARED_ACCESS_PASSWORD must be set in production.");
   }
 
   return password;
-}
-
-// Every seeded account must have an explicit, unique password source in
-// production. No account is allowed to silently fall back to a hardcoded
-// string once NODE_ENV=production — a missing env var should fail the
-// deploy loudly instead of activating a known/guessable password.
-function requireSeedPassword(envVarName, devFallback) {
-  const password = process.env[envVarName] || (isProduction ? null : devFallback);
-
-  if (isProduction && !password) {
-    throw new Error(`${envVarName} must be set in production.`);
-  }
-
-  return password;
-}
-
-function getSeedUsers() {
-  const gazaFellowship = db
-    .prepare("SELECT id FROM fellowships WHERE slug = ?")
-    .get("gaza-love-fellowship");
-  const defaultPassword = getDefaultPassword();
-
-  return [
-    {
-      fullName: "System Super Admin",
-      email: process.env.SUPER_ADMIN_EMAIL || "admin@teensaloud.local",
-      passwordHash: bcrypt.hashSync(
-        process.env.SUPER_ADMIN_PASSWORD || defaultPassword,
-        10
-      ),
-      accessRole: "super_admin",
-      fellowshipId: null,
-      mustChangePassword: true,
-    },
-    {
-      fullName: "Gaza Fellowship Admin",
-      email: "gaza.admin@teensaloud.local",
-      passwordHash: bcrypt.hashSync(
-        requireSeedPassword("FELLOWSHIP_ADMIN_PASSWORD", "GazaLF_2026!Secure"),
-        10
-      ),
-      accessRole: "fellowship_admin",
-      fellowshipId: gazaFellowship ? gazaFellowship.id : null,
-      mustChangePassword: true,
-    },
-    {
-      fullName: "Records Viewer",
-      email: "viewer@teensaloud.local",
-      passwordHash: bcrypt.hashSync(
-        requireSeedPassword("VIEWER_PASSWORD", "Viewer_2026!Secure"),
-        10
-      ),
-      accessRole: "viewer",
-      fellowshipId: null,
-      mustChangePassword: true,
-    },
-  ];
 }
 
 function initializeDatabase() {
@@ -225,6 +167,12 @@ function initializeDatabase() {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   const userColumns = db.prepare("PRAGMA table_info(users)").all();
@@ -235,7 +183,8 @@ function initializeDatabase() {
   migrateMembersTableToRelaxedSchema();
 
   seedReferenceData();
-  seedUsers();
+  seedInternalActor();
+  seedSharedAccessPassword();
 }
 
 // Earlier versions of this schema required gender, birth_day, birth_month,
@@ -431,35 +380,33 @@ function deduplicateRoles() {
   dedupe();
 }
 
-// Seeds the three baseline accounts if they don't already exist. Deliberately
-// uses INSERT OR IGNORE rather than an upsert: this function runs on every
-// app startup, and an upsert that overwrites password_hash/must_change_password
-// on conflict would silently revert any password an admin has already set via
-// the in-app "Change Password" flow back to the seed value on every restart
-// (redeploys, env var changes, etc. on Render) — forcing them through the
-// mandatory password-change screen again and again. Once an account exists,
-// changing its SUPER_ADMIN_PASSWORD/etc. env var has no further effect; use
-// the admin "Reset Password" action (or direct DB access, for a fully
-// locked-out super admin) to change an existing account's password instead.
-function seedUsers() {
-  const insertUser = db.prepare(`
+function seedInternalActor() {
+  db.prepare(`
     INSERT OR IGNORE INTO users (full_name, email, password_hash, access_role, fellowship_id, must_change_password)
     VALUES (?, ?, ?, ?, ?, ?)
-  `);
+  `).run(
+    "Shared Access",
+    INTERNAL_ACTOR_EMAIL,
+    bcrypt.hashSync(requireSharedAccessPassword(), 10),
+    "system",
+    null,
+    0
+  );
+}
 
-  getSeedUsers().forEach((user) => {
-    insertUser.run(
-      user.fullName,
-      user.email,
-      user.passwordHash,
-      user.accessRole,
-      user.fellowshipId,
-      user.mustChangePassword ? 1 : 0
-    );
-  });
+function seedSharedAccessPassword() {
+  db.prepare(`
+    INSERT OR IGNORE INTO app_settings (key, value)
+    VALUES (?, ?)
+  `).run(
+    SHARED_ACCESS_PASSWORD_KEY,
+    bcrypt.hashSync(requireSharedAccessPassword(), 10)
+  );
 }
 
 module.exports = {
   db,
   initializeDatabase,
+  INTERNAL_ACTOR_EMAIL,
+  SHARED_ACCESS_PASSWORD_KEY,
 };

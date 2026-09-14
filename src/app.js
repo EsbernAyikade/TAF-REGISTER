@@ -1,6 +1,5 @@
 const os = require("node:os");
 const path = require("node:path");
-const crypto = require("node:crypto");
 const bcrypt = require("bcryptjs");
 const ExcelJS = require("exceljs");
 const express = require("express");
@@ -9,7 +8,6 @@ const csrf = require("csurf");
 const multer = require("multer");
 const rateLimit = require("express-rate-limit");
 const {
-  APPROVAL_STATUSES,
   GENDER_OPTIONS,
   MEMBER_STATUSES,
   MONTHS,
@@ -21,7 +19,12 @@ const {
   normalizeName,
   normalizePhone,
 } = require("./domain-utils");
-const { db, initializeDatabase } = require("./database");
+const {
+  db,
+  initializeDatabase,
+  INTERNAL_ACTOR_EMAIL,
+  SHARED_ACCESS_PASSWORD_KEY,
+} = require("./database");
 
 initializeDatabase();
 
@@ -89,19 +92,34 @@ app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.locals.months = MONTHS;
 
+function getSharedAccessPasswordHash() {
+  const setting = db
+    .prepare("SELECT value FROM app_settings WHERE key = ?")
+    .get(SHARED_ACCESS_PASSWORD_KEY);
+
+  if (!setting) {
+    throw new Error("Shared access password has not been initialized.");
+  }
+
+  return setting.value;
+}
+
+function getInternalActorId() {
+  const actor =
+    db
+      .prepare("SELECT id FROM users WHERE email = ?")
+      .get(INTERNAL_ACTOR_EMAIL) ||
+    db.prepare("SELECT id FROM users ORDER BY id LIMIT 1").get();
+
+  if (!actor) {
+    throw new Error("No internal actor is available for shared-access actions.");
+  }
+
+  return actor.id;
+}
+
 app.use((req, res, next) => {
-  const user = req.session.userId
-    ? db
-        .prepare(
-          `
-            SELECT users.*, fellowships.name AS fellowship_name, fellowships.slug AS fellowship_slug
-            FROM users
-            LEFT JOIN fellowships ON fellowships.id = users.fellowship_id
-            WHERE users.id = ?
-          `
-        )
-        .get(req.session.userId)
-    : null;
+  const user = req.session.isAuthenticated ? { actorId: getInternalActorId() } : null;
 
   const fellowships = db
     .prepare("SELECT id, name, slug FROM fellowships ORDER BY name")
@@ -155,7 +173,6 @@ app.use((req, res, next) => {
   res.locals.genderOptions = GENDER_OPTIONS;
   res.locals.studyLevels = STUDY_LEVELS;
   res.locals.roleCatalogByFellowship = roleCatalogByFellowship;
-  res.locals.approvalStatuses = APPROVAL_STATUSES;
   res.locals.flash = req.session.flash || null;
   res.locals.formatBirthday = (day, month) =>
     day && month ? `${MONTHS[month - 1]} ${day}` : "Not provided";
@@ -167,17 +184,8 @@ app.use((req, res, next) => {
           year: "numeric",
         }).format(new Date(value))
       : "—";
-  res.locals.isManager =
-    user && (user.access_role === "super_admin" || user.access_role === "fellowship_admin");
+  res.locals.isManager = Boolean(user);
   req.currentUser = user;
-
-  if (
-    user &&
-    Number(user.must_change_password) === 1 &&
-    !["/account/change-password", "/logout", "/login", "/health"].includes(req.path)
-  ) {
-    return res.redirect("/account/change-password");
-  }
 
   delete req.session.flash;
   next();
@@ -198,22 +206,8 @@ function requireAuth(req, res, next) {
   return next();
 }
 
-// Generates a random, unguessable temporary password. Never derive a reset
-// password from the user's name or email — those are visible on the admin
-// screen that triggers the reset, which makes a name-derived password
-// computable by anyone who can see (or guess) the target's full name.
-function generateTemporaryPassword() {
-  const raw = crypto.randomBytes(9).toString("base64url");
-  return `Taf-${raw}`;
-}
-
 function canManageFellowship(user, fellowshipId) {
-  return Boolean(
-    user &&
-      (user.access_role === "super_admin" ||
-        (user.access_role === "fellowship_admin" &&
-          Number(user.fellowship_id) === Number(fellowshipId)))
-  );
+  return Boolean(user && fellowshipId);
 }
 
 function requireManagerForFellowship(req, res, next) {
@@ -226,11 +220,6 @@ function requireManagerForFellowship(req, res, next) {
     .get(req.params.slug);
   if (!fellowship) {
     return res.status(404).render("pages/not-found", { pageTitle: "Not Found" });
-  }
-
-  if (!canManageFellowship(req.currentUser, fellowship.id)) {
-    setFlash(req, "error", "You do not have access to manage that fellowship.");
-    return res.redirect(`/fellowships/${req.params.slug}`);
   }
 
   req.fellowship = fellowship;
@@ -270,8 +259,7 @@ function getBirthdaysForWindow(daySpan) {
                fellowships.name AS fellowship_name
         FROM members
         JOIN fellowships ON fellowships.id = members.fellowship_id
-        WHERE members.approval_status = 'approved'
-          AND members.birth_day IS NOT NULL
+        WHERE members.birth_day IS NOT NULL
           AND members.birth_month IS NOT NULL
         ORDER BY members.birth_month, members.birth_day, members.full_name
       `
@@ -308,8 +296,7 @@ function getBirthdaysThisMonth() {
                fellowships.name AS fellowship_name
         FROM members
         JOIN fellowships ON fellowships.id = members.fellowship_id
-        WHERE members.approval_status = 'approved'
-          AND members.birth_month = ?
+        WHERE members.birth_month = ?
         ORDER BY members.birth_day, members.full_name
       `
     )
@@ -326,7 +313,7 @@ function detectDuplicateMembers({ fullName, email, phone, memberId }) {
       `
         SELECT id, full_name, phone, email, fellowship_id
         FROM members
-        WHERE approval_status != 'rejected'
+        WHERE 1 = 1
       `
     )
     .all();
@@ -463,13 +450,9 @@ function logAudit(userId, action, entityType, entityId, details) {
   ).run(userId || null, action, entityType, entityId || null, details || null);
 }
 
-function buildMembersQuery(filters, currentUser) {
+function buildMembersQuery(filters) {
   const conditions = [];
   const params = [];
-
-  if (currentUser && currentUser.access_role === "viewer") {
-    conditions.push("members.approval_status = 'approved'");
-  }
 
   if (filters.search) {
     conditions.push(
@@ -519,18 +502,8 @@ function buildMembersQuery(filters, currentUser) {
     params.push(filters.status);
   }
 
-  if (filters.approvalStatus) {
-    conditions.push("members.approval_status = ?");
-    params.push(filters.approvalStatus);
-  }
-
   if (filters.duplicateOnly) {
     conditions.push("members.duplicate_flag = 1");
-  }
-
-  if (currentUser && currentUser.access_role === "fellowship_admin") {
-    conditions.push("members.fellowship_id = ?");
-    params.push(currentUser.fellowship_id);
   }
 
   const whereClause = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -548,13 +521,7 @@ function buildMembersQuery(filters, currentUser) {
     LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
     LEFT JOIN roles ON roles.id = members.role_id
     ${whereClause}
-    ORDER BY
-      CASE members.approval_status
-        WHEN 'pending' THEN 0
-        WHEN 'approved' THEN 1
-        ELSE 2
-      END,
-      members.full_name
+    ORDER BY members.full_name
   `;
 
   return { sql, params };
@@ -608,7 +575,6 @@ function getAttendanceSummaryForWeek(weekStart) {
         FROM fellowships
         LEFT JOIN members
           ON members.fellowship_id = fellowships.id
-         AND members.approval_status = 'approved'
          AND members.status = 'Active'
         LEFT JOIN attendance_sessions
           ON attendance_sessions.fellowship_id = fellowships.id
@@ -733,7 +699,7 @@ app.post("/members/new", requireAuth, (req, res) => {
       duplicateNotes
     );
 
-  logAudit(req.currentUser.id, "member_added", "member", result.lastInsertRowid, duplicateNotes);
+  logAudit(null, "member_added", "member", result.lastInsertRowid, duplicateNotes);
 
   setFlash(
     req,
@@ -746,40 +712,33 @@ app.post("/members/new", requireAuth, (req, res) => {
 });
 
 app.get("/login", (req, res) => {
+  if (req.currentUser) {
+    return res.redirect("/dashboard");
+  }
+
   res.render("pages/login", {
     pageTitle: "Login",
     csrfToken: res.locals.csrfToken,
-    isProduction,
   });
 });
 
 app.post("/login", loginLimiter, (req, res) => {
-  const email = String(req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
-  const user = db
-    .prepare("SELECT * FROM users WHERE LOWER(email) = ?")
-    .get(email);
 
-  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
-    setFlash(req, "error", "Invalid email or password.");
+  if (!bcrypt.compareSync(password, getSharedAccessPasswordHash())) {
+    setFlash(req, "error", "Invalid password.");
     return res.redirect("/login");
   }
 
-  req.session.userId = user.id;
-  logAudit(user.id, "login", "user", user.id, null);
-
-  if (Number(user.must_change_password) === 1) {
-    setFlash(req, "warning", "Please set a new password to continue.");
-    return res.redirect("/account/change-password");
-  }
-
-  setFlash(req, "success", `Welcome back, ${user.full_name}.`);
+  req.session.isAuthenticated = true;
+  logAudit(null, "login", "session", null, "Shared password login");
+  setFlash(req, "success", "Welcome back.");
   return res.redirect("/dashboard");
 });
 
 app.get("/account/change-password", requireAuth, (req, res) => {
   res.render("pages/change-password", {
-    pageTitle: "Change Password",
+    pageTitle: "Change Access Password",
     csrfToken: res.locals.csrfToken,
   });
 });
@@ -799,62 +758,20 @@ app.post("/account/change-password", requireAuth, (req, res) => {
   }
 
   db.prepare(
-    "UPDATE users SET password_hash = ?, must_change_password = 0 WHERE id = ?"
-  ).run(bcrypt.hashSync(password, 10), req.currentUser.id);
+    `
+      UPDATE app_settings
+      SET value = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE key = ?
+    `
+  ).run(bcrypt.hashSync(password, 10), SHARED_ACCESS_PASSWORD_KEY);
 
-  logAudit(req.currentUser.id, "password_changed", "user", req.currentUser.id, null);
-  setFlash(req, "success", "Your password has been updated.");
+  logAudit(null, "access_password_changed", "setting", null, null);
+  setFlash(req, "success", "The access password has been updated.");
   return res.redirect("/dashboard");
 });
 
-app.get("/admin/users", requireAuth, (req, res) => {
-  if (req.currentUser.access_role !== "super_admin") {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
-  }
-
-  const users = db
-    .prepare(
-      `
-        SELECT users.*, fellowships.name AS fellowship_name
-        FROM users
-        LEFT JOIN fellowships ON fellowships.id = users.fellowship_id
-        ORDER BY users.full_name
-      `
-    )
-    .all();
-
-  res.render("pages/admin-users", {
-    pageTitle: "User Administration",
-    users,
-    csrfToken: res.locals.csrfToken,
-  });
-});
-
-app.post("/admin/users/:id/reset-password", requireAuth, (req, res) => {
-  if (req.currentUser.access_role !== "super_admin") {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
-  }
-
-  const targetUser = db
-    .prepare("SELECT id, full_name, email FROM users WHERE id = ?")
-    .get(Number(req.params.id));
-
-  if (!targetUser) {
-    return res.status(404).render("pages/not-found", { pageTitle: "User Not Found" });
-  }
-
-  const newPassword = generateTemporaryPassword();
-  db.prepare(
-    "UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?"
-  ).run(bcrypt.hashSync(newPassword, 10), targetUser.id);
-
-  logAudit(req.currentUser.id, "password_reset", "user", targetUser.id, `reset by admin`);
-  setFlash(req, "success", `${targetUser.email} was reset. Temporary password: ${newPassword}`);
-  return res.redirect("/admin/users");
-});
-
 app.post("/logout", requireAuth, (req, res) => {
-  logAudit(req.currentUser.id, "logout", "user", req.currentUser.id, null);
+  logAudit(null, "logout", "session", null, "Shared password logout");
   req.session.destroy(() => {
     res.redirect("/login");
   });
@@ -863,14 +780,8 @@ app.post("/logout", requireAuth, (req, res) => {
 app.get("/dashboard", requireAuth, (req, res) => {
   const currentWeekStart = getWeekStart();
   const currentWeekEnd = getWeekEnd(currentWeekStart);
-  const memberVisibilityCondition =
-    req.currentUser.access_role === "fellowship_admin"
-      ? "WHERE members.fellowship_id = ? AND members.approval_status = 'approved'"
-      : "WHERE members.approval_status = 'approved'";
-  const statsParams =
-    req.currentUser.access_role === "fellowship_admin"
-      ? [req.currentUser.fellowship_id]
-      : [];
+  const memberVisibilityCondition = "WHERE 1 = 1";
+  const statsParams = [];
 
   const totalMembers = db
     .prepare(`SELECT COUNT(*) AS count FROM members ${memberVisibilityCondition}`)
@@ -908,53 +819,19 @@ app.get("/dashboard", requireAuth, (req, res) => {
         FROM fellowships
         LEFT JOIN members
           ON members.fellowship_id = fellowships.id
-         AND members.approval_status = 'approved'
-        ${req.currentUser.access_role === "fellowship_admin" ? "WHERE fellowships.id = ?" : ""}
+        WHERE 1 = 1
         GROUP BY fellowships.id, fellowships.name, fellowships.slug
         ORDER BY fellowships.name
       `
     )
-    .all(...(req.currentUser.access_role === "fellowship_admin" ? [req.currentUser.fellowship_id] : []));
+    .all();
 
-  const pendingApprovals =
-    req.currentUser.access_role === "viewer"
-      ? []
-      : db
-          .prepare(
-            `
-              SELECT members.id, members.full_name, members.duplicate_flag, fellowships.name AS fellowship_name
-              FROM members
-              JOIN fellowships ON fellowships.id = members.fellowship_id
-              WHERE members.approval_status = 'pending'
-              ${
-                req.currentUser.access_role === "fellowship_admin"
-                  ? "AND members.fellowship_id = ?"
-                  : ""
-              }
-              ORDER BY members.created_at DESC
-              LIMIT 8
-            `
-          )
-          .all(
-            ...(req.currentUser.access_role === "fellowship_admin"
-              ? [req.currentUser.fellowship_id]
-              : [])
-          );
-
-  const birthdaysThisWeek = getBirthdaysForWindow(6).filter((birthday) =>
-    req.currentUser.access_role === "fellowship_admin"
-      ? birthday.fellowship_name === req.currentUser.fellowship_name
-      : true
-  );
-  const birthdaysThisMonth = getBirthdaysThisMonth().filter((birthday) =>
-    req.currentUser.access_role === "fellowship_admin"
-      ? birthday.fellowship_name === req.currentUser.fellowship_name
-      : true
-  );
-  const attendanceSummary = getAttendanceSummaryForWeek(currentWeekStart).filter((item) =>
-    req.currentUser.access_role === "fellowship_admin"
-      ? Number(req.currentUser.fellowship_id) === Number(item.id)
-      : true
+  const birthdaysThisWeek = getBirthdaysForWindow(6);
+  const birthdaysThisMonth = getBirthdaysThisMonth();
+  const attendanceSummary = getAttendanceSummaryForWeek(currentWeekStart);
+  const totalAttendanceThisWeek = attendanceSummary.reduce(
+    (sum, item) => sum + item.present_total,
+    0
   );
 
   res.render("pages/dashboard", {
@@ -965,10 +842,10 @@ app.get("/dashboard", requireAuth, (req, res) => {
     genderStats,
     subMinistryStats,
     fellowshipStats,
-    pendingApprovals,
     birthdaysThisWeek,
     birthdaysThisMonth,
     attendanceSummary,
+    totalAttendanceThisWeek,
   });
 });
 
@@ -983,11 +860,10 @@ app.get("/members", requireAuth, (req, res) => {
     level: String(req.query.level || "").trim(),
     hostel: String(req.query.hostel || "").trim(),
     status: String(req.query.status || "").trim(),
-    approvalStatus: String(req.query.approvalStatus || "").trim(),
     duplicateOnly: req.query.duplicateOnly === "1",
   };
 
-  const { sql, params } = buildMembersQuery(filters, req.currentUser);
+  const { sql, params } = buildMembersQuery(filters);
   const members = db.prepare(sql).all(...params);
 
   res.render("pages/members", {
@@ -1004,7 +880,6 @@ app.get("/members", requireAuth, (req, res) => {
       level: filters.level,
       hostel: filters.hostel,
       status: filters.status,
-      approvalStatus: filters.approvalStatus,
       duplicateOnly: filters.duplicateOnly ? "1" : "",
     }),
     csrfToken: res.locals.csrfToken,
@@ -1136,10 +1011,6 @@ async function parseAttendanceRegisterWorkbook(buffer) {
 }
 
 app.get("/members/import", requireAuth, (req, res) => {
-  if (req.currentUser.access_role !== "super_admin") {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
-  }
-
   res.render("pages/import-members", {
     pageTitle: "Bulk Import",
     csrfToken: res.locals.csrfToken,
@@ -1148,10 +1019,6 @@ app.get("/members/import", requireAuth, (req, res) => {
 });
 
 app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtection, async (req, res) => {
-  if (req.currentUser.access_role !== "super_admin") {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
-  }
-
   if (!req.file) {
     setFlash(req, "error", "Please choose a file to import.");
     return res.redirect("/members/import");
@@ -1194,7 +1061,7 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
           ON CONFLICT(fellowship_id, week_start)
           DO UPDATE SET week_end = excluded.week_end, updated_at = CURRENT_TIMESTAMP
         `
-      ).run(fellowshipId, weekStart, weekEnd, req.currentUser.id);
+      ).run(fellowshipId, weekStart, weekEnd, req.currentUser.actorId);
       const session = db
         .prepare("SELECT id FROM attendance_sessions WHERE fellowship_id = ? AND week_start = ?")
         .get(fellowshipId, weekStart);
@@ -1270,7 +1137,7 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
     });
 
     logAudit(
-      req.currentUser.id,
+      null,
       "attendance_register_imported",
       "fellowship",
       fellowshipId,
@@ -1380,7 +1247,7 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
   }
 
   logAudit(
-    req.currentUser.id,
+    null,
     "members_imported",
     "member",
     null,
@@ -1405,17 +1272,6 @@ app.get("/members/:id", requireAuth, (req, res) => {
   const member = getMemberWithDetails(Number(req.params.id));
   if (!member) {
     return res.status(404).render("pages/not-found", { pageTitle: "Member Not Found" });
-  }
-
-  if (req.currentUser.access_role === "viewer" && member.approval_status !== "approved") {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
-  }
-
-  if (
-    req.currentUser.access_role === "fellowship_admin" &&
-    Number(req.currentUser.fellowship_id) !== Number(member.fellowship_id)
-  ) {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
   }
 
   const attendanceStats = db
@@ -1499,14 +1355,6 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
     return res.redirect(`/members/${existingMember.id}/edit`);
   }
 
-  if (
-    req.currentUser.access_role === "fellowship_admin" &&
-    Number(payload.fellowshipId) !== Number(req.currentUser.fellowship_id)
-  ) {
-    setFlash(req, "error", "Fellowship admins can only manage members in their own fellowship.");
-    return res.redirect(`/members/${existingMember.id}/edit`);
-  }
-
   const duplicates = detectDuplicateMembers({ ...payload, memberId: existingMember.id });
   const duplicateNotes = duplicates.length
     ? duplicates
@@ -1544,7 +1392,7 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
   );
 
   logAudit(
-    req.currentUser.id,
+    null,
     "member_updated",
     "member",
     existingMember.id,
@@ -1554,46 +1402,26 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
   return res.redirect(`/members/${existingMember.id}`);
 });
 
-app.post("/members/:id/approve", requireAuth, (req, res) => {
-  const member = getMemberWithDetails(Number(req.params.id));
-  if (!member) {
-    return res.status(404).render("pages/not-found", { pageTitle: "Member Not Found" });
-  }
-  if (!canManageMember(req.currentUser, member)) {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
-  }
+app.get("/fellowships", requireAuth, (_req, res) => {
+  const currentWeekStart = getWeekStart();
+  const attendanceByFellowship = new Map(
+    getAttendanceSummaryForWeek(currentWeekStart).map((item) => [Number(item.id), item])
+  );
+  const fellowships = db
+    .prepare("SELECT id, name, slug FROM fellowships ORDER BY name")
+    .all()
+    .map((fellowship) => ({
+      ...fellowship,
+      attendance: attendanceByFellowship.get(Number(fellowship.id)) || null,
+      memberCount: db
+        .prepare("SELECT COUNT(*) AS count FROM members WHERE fellowship_id = ?")
+        .get(fellowship.id).count,
+    }));
 
-  db.prepare(
-    `
-      UPDATE members
-      SET approval_status = 'approved', approved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `
-  ).run(member.id);
-  logAudit(req.currentUser.id, "member_approved", "member", member.id, null);
-  setFlash(req, "success", `${member.full_name} has been approved.`);
-  return res.redirect(req.get("referer") || "/members");
-});
-
-app.post("/members/:id/reject", requireAuth, (req, res) => {
-  const member = getMemberWithDetails(Number(req.params.id));
-  if (!member) {
-    return res.status(404).render("pages/not-found", { pageTitle: "Member Not Found" });
-  }
-  if (!canManageMember(req.currentUser, member)) {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
-  }
-
-  db.prepare(
-    `
-      UPDATE members
-      SET approval_status = 'rejected', updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `
-  ).run(member.id);
-  logAudit(req.currentUser.id, "member_rejected", "member", member.id, null);
-  setFlash(req, "warning", `${member.full_name} was marked as rejected.`);
-  return res.redirect(req.get("referer") || "/members");
+  res.render("pages/fellowships", {
+    pageTitle: "Fellowships",
+    fellowships,
+  });
 });
 
 app.get("/fellowships/:slug", requireAuth, (req, res) => {
@@ -1602,13 +1430,6 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
     .get(req.params.slug);
   if (!fellowship) {
     return res.status(404).render("pages/not-found", { pageTitle: "Fellowship Not Found" });
-  }
-
-  if (
-    req.currentUser.access_role === "fellowship_admin" &&
-    Number(req.currentUser.fellowship_id) !== Number(fellowship.id)
-  ) {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
   }
 
   const members = db
@@ -1621,7 +1442,6 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
         LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
         LEFT JOIN roles ON roles.id = members.role_id
         WHERE members.fellowship_id = ?
-          AND members.approval_status = 'approved'
         ORDER BY
           CASE roles.role_type
             WHEN 'Executive' THEN 0
@@ -1713,7 +1533,6 @@ app.get(
           SELECT id, full_name, role_id
           FROM members
           WHERE fellowship_id = ?
-            AND approval_status = 'approved'
             AND status = 'Active'
           ORDER BY full_name
         `
@@ -1804,7 +1623,6 @@ app.post(
           SELECT id
           FROM members
           WHERE fellowship_id = ?
-            AND approval_status = 'approved'
             AND status = 'Active'
         `
       )
@@ -1821,7 +1639,7 @@ app.post(
             recorded_by_user_id = excluded.recorded_by_user_id,
             updated_at = CURRENT_TIMESTAMP
         `
-      ).run(fellowship.id, weekStart, weekEnd, req.currentUser.id);
+      ).run(fellowship.id, weekStart, weekEnd, req.currentUser.actorId);
 
       const sessionRow = db
         .prepare(
@@ -1850,7 +1668,7 @@ app.post(
 
     transaction();
     logAudit(
-      req.currentUser.id,
+      null,
       "attendance_updated",
       "attendance_session",
       null,
@@ -1872,16 +1690,12 @@ app.get("/exports/members.csv", requireAuth, (req, res) => {
     level: String(req.query.level || "").trim(),
     hostel: String(req.query.hostel || "").trim(),
     status: String(req.query.status || "").trim(),
-    approvalStatus:
-      req.currentUser.access_role === "viewer"
-        ? "approved"
-        : String(req.query.approvalStatus || "approved").trim(),
     duplicateOnly: req.query.duplicateOnly === "1",
   };
 
-  const { sql, params } = buildMembersQuery(filters, req.currentUser);
+  const { sql, params } = buildMembersQuery(filters);
   const members = db.prepare(sql).all(...params);
-  logAudit(req.currentUser.id, "members_exported_csv", "export", null, JSON.stringify(filters));
+  logAudit(null, "members_exported_csv", "export", null, JSON.stringify(filters));
   const header = [
     "Full Name",
     "Gender",
@@ -1895,7 +1709,6 @@ app.get("/exports/members.csv", requireAuth, (req, res) => {
     "Email",
     "Level",
     "Status",
-    "Approval Status",
     "Joined At",
   ];
   const rows = members.map((member) => [
@@ -1911,7 +1724,6 @@ app.get("/exports/members.csv", requireAuth, (req, res) => {
     member.email,
     member.level,
     member.status,
-    member.approval_status,
     member.joined_at,
   ]);
 
@@ -1936,16 +1748,12 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
       level: String(req.query.level || "").trim(),
       hostel: String(req.query.hostel || "").trim(),
       status: String(req.query.status || "").trim(),
-      approvalStatus:
-        req.currentUser.access_role === "viewer"
-          ? "approved"
-          : String(req.query.approvalStatus || "approved").trim(),
       duplicateOnly: req.query.duplicateOnly === "1",
     };
 
-    const { sql, params } = buildMembersQuery(filters, req.currentUser);
+    const { sql, params } = buildMembersQuery(filters);
     const members = db.prepare(sql).all(...params);
-    logAudit(req.currentUser.id, "members_exported_xlsx", "export", null, JSON.stringify(filters));
+    logAudit(null, "members_exported_xlsx", "export", null, JSON.stringify(filters));
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Members");
@@ -1962,7 +1770,6 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
       { header: "Email", key: "email", width: 26 },
       { header: "Level", key: "level", width: 10 },
       { header: "Status", key: "status", width: 12 },
-      { header: "Approval Status", key: "approval_status", width: 16 },
       { header: "Joined At", key: "joined_at", width: 22 },
     ];
 

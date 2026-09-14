@@ -7,7 +7,7 @@
     <div>
       <span class="eyebrow">Directory</span>
       <h1>Member Database</h1>
-      <p>Search, filter, approve, and export member records.</p>
+      <p>Search, filter, add, and export member records.</p>
     </div>
     <div class="button-row">
       <a href="/members/new" class="button">Add Member</a>
@@ -29,7 +29,6 @@
       if (courseMatch) activeFilterLabels.push({ label: `Course: ${courseMatch.name}` });
     }
     if (filters.status) activeFilterLabels.push({ label: `Status: ${filters.status}` });
-    if (filters.approvalStatus) activeFilterLabels.push({ label: `Approval: ${filters.approvalStatus}` });
     if (filters.duplicateOnly) activeFilterLabels.push({ label: 'Possible duplicates only' });
   %>
 
@@ -128,18 +127,6 @@
         </select>
       </label>
 
-      <% if (currentUser.access_role !== 'viewer') { %>
-        <label>
-          <span>Approval Status</span>
-          <select name="approvalStatus">
-            <option value="">All</option>
-            <% approvalStatuses.forEach((status) => { %>
-              <option value="<%= status %>" <%= filters.approvalStatus === status ? 'selected' : '' %>><%= status %></option>
-            <% }) %>
-          </select>
-        </label>
-      <% } %>
-
       <label class="checkbox-row">
         <input type="checkbox" name="duplicateOnly" value="1" <%= filters.duplicateOnly ? 'checked' : '' %> />
         <span>Possible duplicates only</span>
@@ -163,14 +150,13 @@
             <th>Course</th>
             <th>Level</th>
             <th>Status</th>
-            <th>Approval</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody>
           <% if (members.length === 0) { %>
             <tr>
-              <td colspan="8">
+              <td colspan="7">
                 <div class="empty-state">
                   <strong>No members match the selected filters</strong>
                   <p class="muted">Try clearing a filter or broadening your search.</p>
@@ -196,30 +182,11 @@
                   <%= member.status %>
                 </span>
               </td>
-              <td data-label="Approval">
-                <span class="badge badge-<%= member.approval_status === 'approved' ? 'success' : member.approval_status === 'pending' ? 'warning' : 'danger' %>">
-                  <%= member.approval_status %>
-                </span>
-              </td>
               <td data-label="Actions">
                 <div class="button-row">
                   <a href="/members/<%= member.id %>" class="button button-small button-outline">View</a>
-                  <% if (isManager && (currentUser.access_role === 'super_admin' || Number(currentUser.fellowship_id) === Number(member.fellowship_id))) { %>
+                  <% if (isManager) { %>
                     <a href="/members/<%= member.id %>/edit" class="button button-small">Edit</a>
-                    <% if (member.approval_status === 'pending') { %>
-                      <form action="/members/<%= member.id %>/approve" method="post">
-                        <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
-                        <button type="submit" class="button button-small">Approve</button>
-                      </form>
-                      <form
-                        action="/members/<%= member.id %>/reject"
-                        method="post"
-                        data-confirm="Reject <%= member.full_name %>'s registration? This can be reversed later by editing the record."
-                      >
-                        <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
-                        <button type="submit" class="button button-small button-outline">Reject</button>
-                      </form>
-                    <% } %>
                   <% } %>
                 </div>
               </td>

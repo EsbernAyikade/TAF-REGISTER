@@ -20,24 +20,10 @@
     <nav class="nav" aria-label="Main navigation">
       <% if (currentUser) { %>
         <a href="/dashboard" class="nav-link <%= currentPath === '/dashboard' ? 'active' : '' %>">Dashboard</a>
-        <a href="/members" class="nav-link <%= currentPath.startsWith('/members') || currentPath.startsWith('/exports') ? 'active' : '' %>">Members</a>
-        <a href="/members/new" class="nav-link <%= currentPath === '/members/new' ? 'active' : '' %>">Add Member</a>
-        <% if (currentUser.access_role === 'super_admin') { %>
-          <a href="/admin/users" class="nav-link <%= currentPath === '/admin/users' ? 'active' : '' %>">Users</a>
-          <a href="/members/import" class="nav-link <%= currentPath === '/members/import' ? 'active' : '' %>">Import</a>
-        <% } %>
-        <% fellowships.forEach((fellowship) => { %>
-          <% if (currentUser.access_role !== 'fellowship_admin' || Number(currentUser.fellowship_id) === Number(fellowship.id)) { %>
-            <a href="/fellowships/<%= fellowship.slug %>" class="nav-link <%= currentPath === '/fellowships/' + fellowship.slug ? 'active' : '' %>"><%= fellowship.name.replace(' Love Fellowship', '') %></a>
-          <% } %>
-        <% }) %>
-        <div class="user-chip" aria-label="Current user profile">
-          <span class="user-avatar"><%= currentUser.full_name.charAt(0).toUpperCase() %></span>
-          <div>
-            <strong><%= currentUser.full_name %></strong>
-            <small><%= currentUser.access_role.replace('_', ' ') %></small>
-          </div>
-        </div>
+        <a href="/members" class="nav-link <%= ((currentPath === '/members' || currentPath === '/members/new' || (currentPath.startsWith('/members/') && !currentPath.startsWith('/members/import'))) || currentPath.startsWith('/exports')) ? 'active' : '' %>">Members</a>
+        <a href="/fellowships" class="nav-link <%= currentPath === '/fellowships' || currentPath.startsWith('/fellowships/') ? 'active' : '' %>">Fellowships</a>
+        <a href="/members/import" class="nav-link <%= currentPath === '/members/import' ? 'active' : '' %>">Import</a>
+        <a href="/account/change-password" class="nav-link <%= currentPath === '/account/change-password' ? 'active' : '' %>">Change Access Password</a>
         <form action="/logout" method="post" class="nav-logout">
           <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
           <button type="submit" class="button button-outline button-small">Logout</button>
