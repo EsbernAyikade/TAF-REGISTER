@@ -1,5 +1,6 @@
 const os = require("node:os");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const bcrypt = require("bcryptjs");
 const ExcelJS = require("exceljs");
 const express = require("express");
@@ -10,7 +11,6 @@ const rateLimit = require("express-rate-limit");
 const {
   APPROVAL_STATUSES,
   GENDER_OPTIONS,
-  LOVE_FELLOWSHIPS,
   MEMBER_STATUSES,
   MONTHS,
   STUDY_LEVELS,
@@ -29,7 +29,6 @@ const app = express();
 const isProduction = process.env.NODE_ENV === "production";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 3000);
-const PUBLIC_REGISTRATION_ONLY = process.env.PUBLIC_REGISTRATION_ONLY === "true";
 const SESSION_SECRET = process.env.SESSION_SECRET || (isProduction ? null : "dev-only-local-session-secret");
 
 if (isProduction && !SESSION_SECRET) {
@@ -63,20 +62,25 @@ const loginLimiter = rateLimit({
   message: "Too many login attempts. Please wait 15 minutes before trying again.",
   skipSuccessfulRequests: true,
 });
-const registrationLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 30,
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: "Too many registrations. Please try again later.",
-});
 const csrfProtection = csrf({ cookie: false });
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 2 * 1024 * 1024 },
 });
 
-app.use(csrfProtection);
+// CSRF is applied globally EXCEPT on multipart/form-data routes (currently
+// just the CSV import). Those routes must run multer first to parse the
+// body, then apply csrfProtection themselves afterwards — if the global
+// check ran first, it would inspect req.body._csrf before multer has
+// populated req.body at all, and reject every multipart request outright.
+const MULTIPART_ROUTES = new Set(["/members/import"]);
+
+app.use((req, res, next) => {
+  if (req.method === "POST" && MULTIPART_ROUTES.has(req.path)) {
+    return next();
+  }
+  return csrfProtection(req, res, next);
+});
 app.use((req, res, next) => {
   res.locals.csrfToken = req.csrfToken ? req.csrfToken() : "";
   next();
@@ -106,6 +110,17 @@ app.use((req, res, next) => {
   const subMinistries = db
     .prepare("SELECT id, name FROM sub_ministries ORDER BY name")
     .all();
+  const hostelSuggestions = db
+    .prepare(
+      `
+        SELECT DISTINCT hostel
+        FROM members
+        WHERE TRIM(hostel) != ''
+        ORDER BY hostel
+      `
+    )
+    .all()
+    .map((row) => row.hostel);
   const roles = db
     .prepare(
       `
@@ -129,10 +144,12 @@ app.use((req, res, next) => {
   }, {});
 
   res.locals.currentUser = user;
+  res.locals.isProduction = isProduction;
   res.locals.currentPath = req.path;
   res.locals.fellowships = fellowships;
   res.locals.courses = courses;
   res.locals.subMinistries = subMinistries;
+  res.locals.hostelSuggestions = hostelSuggestions;
   res.locals.allRoles = roles;
   res.locals.memberStatuses = MEMBER_STATUSES;
   res.locals.genderOptions = GENDER_OPTIONS;
@@ -140,7 +157,8 @@ app.use((req, res, next) => {
   res.locals.roleCatalogByFellowship = roleCatalogByFellowship;
   res.locals.approvalStatuses = APPROVAL_STATUSES;
   res.locals.flash = req.session.flash || null;
-  res.locals.formatBirthday = (day, month) => `${MONTHS[month - 1]} ${day}`;
+  res.locals.formatBirthday = (day, month) =>
+    day && month ? `${MONTHS[month - 1]} ${day}` : "Not provided";
   res.locals.formatDate = (value) =>
     value
       ? new Intl.DateTimeFormat("en-GB", {
@@ -172,40 +190,6 @@ function setFlash(req, type, message) {
   }
 }
 
-function isLocalIp(ipAddress) {
-  if (!ipAddress) {
-    return false;
-  }
-
-  const normalized = ipAddress.replace(/^::ffff:/, "");
-  if (normalized === "::1" || normalized === "127.0.0.1" || normalized === "localhost") {
-    return true;
-  }
-
-  if (normalized.startsWith("10.") || normalized.startsWith("192.168.")) {
-    return true;
-  }
-
-  if (normalized.startsWith("172.")) {
-    const secondOctet = Number(normalized.split(".")[1]);
-    return secondOctet >= 16 && secondOctet <= 31;
-  }
-
-  return false;
-}
-
-function isExternalRestrictedRequest(req) {
-  if (!PUBLIC_REGISTRATION_ONLY) {
-    return false;
-  }
-
-  if (req.path === "/" || req.path === "/register" || req.path === "/health") {
-    return false;
-  }
-
-  return !isLocalIp(req.ip);
-}
-
 function requireAuth(req, res, next) {
   if (!req.currentUser) {
     setFlash(req, "warning", "Please sign in to access the member database.");
@@ -214,20 +198,13 @@ function requireAuth(req, res, next) {
   return next();
 }
 
-app.use((req, res, next) => {
-  if (isExternalRestrictedRequest(req)) {
-    return res.status(403).render("pages/forbidden", {
-      pageTitle: "Registration Only",
-      message:
-        "This shared public link is limited to member registration. Please contact an admin for record access.",
-    });
-  }
-
-  return next();
-});
-
-function isSuperAdmin(user) {
-  return user && user.access_role === "super_admin";
+// Generates a random, unguessable temporary password. Never derive a reset
+// password from the user's name or email — those are visible on the admin
+// screen that triggers the reset, which makes a name-derived password
+// computable by anyone who can see (or guess) the target's full name.
+function generateTemporaryPassword() {
+  const raw = crypto.randomBytes(9).toString("base64url");
+  return `Taf-${raw}`;
 }
 
 function canManageFellowship(user, fellowshipId) {
@@ -294,6 +271,8 @@ function getBirthdaysForWindow(daySpan) {
         FROM members
         JOIN fellowships ON fellowships.id = members.fellowship_id
         WHERE members.approval_status = 'approved'
+          AND members.birth_day IS NOT NULL
+          AND members.birth_month IS NOT NULL
         ORDER BY members.birth_month, members.birth_day, members.full_name
       `
     )
@@ -429,10 +408,11 @@ function parseMemberPayload(body) {
   return {
     fullName: String(body.fullName || "").trim(),
     gender: String(body.gender || "").trim(),
-    birthDay: Number(body.birthDay),
-    birthMonth: Number(body.birthMonth),
+    birthDay: body.birthDay ? Number(body.birthDay) : null,
+    birthMonth: body.birthMonth ? Number(body.birthMonth) : null,
     hostel: String(body.hostel || "").trim(),
-    courseId: Number(body.courseId),
+    roomNo: String(body.roomNo || "").trim(),
+    courseId: body.courseId ? Number(body.courseId) : null,
     fellowshipId: Number(body.fellowshipId),
     subMinistryId: body.subMinistryId ? Number(body.subMinistryId) : null,
     roleId: body.roleId ? Number(body.roleId) : null,
@@ -443,25 +423,24 @@ function parseMemberPayload(body) {
   };
 }
 
+// Only a name and a Love Fellowship are truly required. Real attendance
+// registers (paper books digitized into spreadsheets, like the bulk-import
+// files fellowships actually keep) very often lack a phone number, birthday,
+// hostel, or course for a given member — that's a data-quality reality, not
+// something the app should block on. Anything else provided is validated for
+// correctness (a birthday, if given, must be a real day/month combination),
+// but nothing else is mandatory.
 function validateMemberPayload(payload) {
-  if (
-    !payload.fullName ||
-    !payload.gender ||
-    !payload.birthDay ||
-    !payload.birthMonth ||
-    !payload.hostel ||
-    !payload.courseId ||
-    !payload.fellowshipId ||
-    !payload.phone ||
-    !payload.email ||
-    !payload.level ||
-    !payload.status
-  ) {
-    return "Please complete all required fields.";
+  if (!payload.fullName || !payload.fellowshipId) {
+    return "A full name and a Love Fellowship are required.";
   }
 
-  if (!isValidBirthDate(payload.birthDay, payload.birthMonth)) {
+  if (payload.birthDay && payload.birthMonth && !isValidBirthDate(payload.birthDay, payload.birthMonth)) {
     return "Please enter a valid birth day and month.";
+  }
+
+  if ((payload.birthDay && !payload.birthMonth) || (!payload.birthDay && payload.birthMonth)) {
+    return "Please provide both a birth day and a birth month, or leave both blank.";
   }
 
   if (!validateRoleForFellowship(payload.roleId, payload.fellowshipId)) {
@@ -469,6 +448,10 @@ function validateMemberPayload(payload) {
   }
 
   return null;
+}
+
+function formatBirthdayForExport(birthDay, birthMonth) {
+  return birthDay && birthMonth ? `${birthDay}/${birthMonth}` : "";
 }
 
 function logAudit(userId, action, entityType, entityId, details) {
@@ -560,7 +543,7 @@ function buildMembersQuery(filters, currentUser) {
            roles.display_name AS role_name,
            roles.role_type
     FROM members
-    JOIN courses ON courses.id = members.course_id
+    LEFT JOIN courses ON courses.id = members.course_id
     JOIN fellowships ON fellowships.id = members.fellowship_id
     LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
     LEFT JOIN roles ON roles.id = members.role_id
@@ -589,7 +572,7 @@ function getMemberWithDetails(memberId) {
                roles.display_name AS role_name,
                roles.role_type
         FROM members
-        JOIN courses ON courses.id = members.course_id
+        LEFT JOIN courses ON courses.id = members.course_id
         JOIN fellowships ON fellowships.id = members.fellowship_id
         LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
         LEFT JOIN roles ON roles.id = members.role_id
@@ -646,78 +629,59 @@ function getAttendanceSummaryForWeek(weekStart) {
 }
 
 app.get("/", (req, res) => {
-  if (req.currentUser) {
-    return res.redirect("/dashboard");
-  }
-  return res.redirect("/register");
+  return res.redirect(req.currentUser ? "/dashboard" : "/login");
 });
 
+const BLANK_MEMBER = {
+  full_name: "",
+  gender: "",
+  birth_day: "",
+  birth_month: "",
+  hostel: "",
+  room_no: "",
+  course_id: "",
+  fellowship_id: "",
+  sub_ministry_id: "",
+  role_id: "",
+  phone: "",
+  email: "",
+  level: "",
+  status: "Active",
+};
+
+// There is no public/member-facing registration in this app — every member
+// record is entered by an authenticated admin, either one at a time here or
+// in bulk via /members/import. Old bookmarks to the previous public
+// "/register" link still resolve sensibly instead of 404ing.
 app.get("/register", (req, res) => {
-  res.render("pages/register", {
-    pageTitle: "Member Registration",
-    member: {
-      full_name: "",
-      gender: "",
-      birth_day: "",
-      birth_month: "",
-      hostel: "",
-      course_id: "",
-      fellowship_id: "",
-      sub_ministry_id: "",
-      role_id: "",
-      phone: "",
-      email: "",
-      level: "",
-      status: "Active",
-    },
-    csrfToken: res.locals.csrfToken,
-  });
+  return res.redirect(req.currentUser ? "/members/new" : "/login");
 });
 
 app.get("/members/new", requireAuth, (req, res) => {
   res.render("pages/register", {
     pageTitle: "Add Member",
-    member: {
-      full_name: "",
-      gender: "",
-      birth_day: "",
-      birth_month: "",
-      hostel: "",
-      course_id: "",
-      fellowship_id: "",
-      sub_ministry_id: "",
-      role_id: "",
-      phone: "",
-      email: "",
-      level: "",
-      status: "Active",
-    },
+    mode: "admin",
+    member: BLANK_MEMBER,
     csrfToken: res.locals.csrfToken,
   });
 });
 
-app.post("/register", registrationLimiter, csrfProtection, (req, res) => {
-  if (req.body.website || req.body.honeypot) {
-    return res.status(400).render("pages/register", {
-      pageTitle: "Member Registration",
-      member: {},
-      csrfToken: res.locals.csrfToken,
-    });
-  }
-
+app.post("/members/new", requireAuth, (req, res) => {
   const payload = parseMemberPayload(req.body);
   const validationError = validateMemberPayload(payload);
 
   if (validationError) {
     setFlash(req, "error", validationError);
     return res.status(422).render("pages/register", {
-      pageTitle: "Member Registration",
+      pageTitle: "Add Member",
+      mode: "admin",
       member: {
         full_name: payload.fullName,
         gender: payload.gender,
         birth_day: payload.birthDay,
         birth_month: payload.birthMonth,
         hostel: payload.hostel,
+        room_no: payload.roomNo,
         course_id: payload.courseId,
         fellowship_id: payload.fellowshipId,
         sub_ministry_id: payload.subMinistryId,
@@ -742,48 +706,54 @@ app.post("/register", registrationLimiter, csrfProtection, (req, res) => {
     .prepare(
       `
         INSERT INTO members (
-          full_name, gender, birth_day, birth_month, hostel,
+          full_name, gender, birth_day, birth_month, hostel, room_no,
           course_id, fellowship_id, sub_ministry_id, role_id,
           phone, email, level, status, approval_status,
           duplicate_flag, duplicate_notes
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)
       `
     )
     .run(
       payload.fullName,
-      payload.gender,
+      payload.gender || null,
       payload.birthDay,
       payload.birthMonth,
-      payload.hostel,
+      payload.hostel || null,
+      payload.roomNo || null,
       payload.courseId,
       payload.fellowshipId,
       payload.subMinistryId,
       payload.roleId,
-      payload.phone,
-      payload.email,
-      payload.level,
+      payload.phone || null,
+      payload.email || null,
+      payload.level || null,
       payload.status,
       duplicates.length ? 1 : 0,
       duplicateNotes
     );
 
-  logAudit(null, "member_registered", "member", result.lastInsertRowid, duplicateNotes);
+  logAudit(req.currentUser.id, "member_added", "member", result.lastInsertRowid, duplicateNotes);
+
   setFlash(
     req,
     duplicates.length ? "warning" : "success",
     duplicates.length
-      ? "Registration saved for review and flagged as a possible duplicate."
-      : "Registration submitted successfully. An admin will approve it before it appears in the directory."
+      ? `${payload.fullName} was added but flagged as a possible duplicate — please review.`
+      : `${payload.fullName} was added.`
   );
-  return res.redirect("/register");
+  return res.redirect("/members/new");
 });
 
 app.get("/login", (req, res) => {
-  res.render("pages/login", { pageTitle: "Login", csrfToken: res.locals.csrfToken });
+  res.render("pages/login", {
+    pageTitle: "Login",
+    csrfToken: res.locals.csrfToken,
+    isProduction,
+  });
 });
 
-app.post("/login", loginLimiter, csrfProtection, (req, res) => {
+app.post("/login", loginLimiter, (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
   const user = db
@@ -814,7 +784,7 @@ app.get("/account/change-password", requireAuth, (req, res) => {
   });
 });
 
-app.post("/account/change-password", requireAuth, csrfProtection, (req, res) => {
+app.post("/account/change-password", requireAuth, (req, res) => {
   const password = String(req.body.password || "");
   const confirm = String(req.body.confirmPassword || "");
 
@@ -860,7 +830,7 @@ app.get("/admin/users", requireAuth, (req, res) => {
   });
 });
 
-app.post("/admin/users/:id/reset-password", requireAuth, csrfProtection, (req, res) => {
+app.post("/admin/users/:id/reset-password", requireAuth, (req, res) => {
   if (req.currentUser.access_role !== "super_admin") {
     return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
   }
@@ -873,7 +843,7 @@ app.post("/admin/users/:id/reset-password", requireAuth, csrfProtection, (req, r
     return res.status(404).render("pages/not-found", { pageTitle: "User Not Found" });
   }
 
-  const newPassword = `Taf-${targetUser.full_name.replace(/\s+/g, "").slice(0, 8)}!2026`;
+  const newPassword = generateTemporaryPassword();
   db.prepare(
     "UPDATE users SET password_hash = ?, must_change_password = 1 WHERE id = ?"
   ).run(bcrypt.hashSync(newPassword, 10), targetUser.id);
@@ -883,7 +853,7 @@ app.post("/admin/users/:id/reset-password", requireAuth, csrfProtection, (req, r
   return res.redirect("/admin/users");
 });
 
-app.post("/logout", requireAuth, csrfProtection, (req, res) => {
+app.post("/logout", requireAuth, (req, res) => {
   logAudit(req.currentUser.id, "logout", "user", req.currentUser.id, null);
   req.session.destroy(() => {
     res.redirect("/login");
@@ -909,11 +879,11 @@ app.get("/dashboard", requireAuth, (req, res) => {
   const genderStats = db
     .prepare(
       `
-        SELECT gender, COUNT(*) AS count
+        SELECT COALESCE(NULLIF(gender, ''), 'Unspecified') AS gender, COUNT(*) AS count
         FROM members
         ${memberVisibilityCondition}
-        GROUP BY gender
-        ORDER BY gender
+        GROUP BY COALESCE(NULLIF(gender, ''), 'Unspecified')
+        ORDER BY count DESC, gender
       `
     )
     .all(...statsParams);
@@ -1041,27 +1011,293 @@ app.get("/members", requireAuth, (req, res) => {
   });
 });
 
+function addDaysToIsoDate(isoDate, days) {
+  const date = new Date(`${isoDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+// Matches an incoming register row to an existing member within the same
+// fellowship, so uploading the same fellowship's register again next month
+// updates the same people instead of creating duplicates. Prefers an exact
+// phone match (most reliable), falling back to fuzzy name matching.
+function findExistingMemberInFellowship(fellowshipId, fullName, phone) {
+  const candidates = db
+    .prepare("SELECT id, full_name, phone FROM members WHERE fellowship_id = ?")
+    .all(fellowshipId);
+
+  const normalizedPhone = normalizePhone(phone);
+  if (normalizedPhone) {
+    const phoneMatch = candidates.find((row) => normalizePhone(row.phone) === normalizedPhone);
+    if (phoneMatch) {
+      return phoneMatch;
+    }
+  }
+
+  return candidates.find((row) => areLikelyNameMatches(row.full_name, fullName)) || null;
+}
+
+function parseDayMonth(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^(\d{1,2})[/.\-](\d{1,2})/);
+  if (!match) {
+    return { day: null, month: null };
+  }
+  const day = Number(match[1]);
+  const month = Number(match[2]);
+  return isValidBirthDate(day, month) ? { day, month } : { day: null, month: null };
+}
+
+function levelFromYear(value) {
+  const year = Number(String(value || "").trim());
+  if (!year || year < 1 || year > 6) {
+    return "";
+  }
+  return String(year * 100);
+}
+
+// Reads a real fellowship attendance register (the kind kept as a monthly
+// Excel sheet): a title row, a header row naming NAME/NUMBER/HOSTEL/ROOM
+// NO./BIRTHDAY/SUBMINISTRY/YEAR, followed by one numbered column per meeting
+// week. Any mark in a week's column counts as present; a blank counts as
+// absent — but only for weeks where at least one person has a mark, since a
+// fully blank column means that week hasn't happened yet.
+async function parseAttendanceRegisterWorkbook(buffer) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(buffer);
+  const sheet = workbook.worksheets[0];
+  if (!sheet) {
+    throw new Error("The workbook has no sheets.");
+  }
+
+  const columns = {};
+  const weekColumns = [];
+  let headerRowNumber = null;
+
+  for (let rowNumber = 1; rowNumber <= Math.min(sheet.rowCount, 5); rowNumber += 1) {
+    const row = sheet.getRow(rowNumber);
+    const cellTexts = [];
+    row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
+      cellTexts[colNumber] = String(cell.value || "").trim();
+    });
+    if (cellTexts.some((text) => text && text.toUpperCase() === "NAME")) {
+      headerRowNumber = rowNumber;
+      cellTexts.forEach((text, colNumber) => {
+        if (!text) return;
+        const normalized = text.toUpperCase();
+        if (normalized === "NAME") columns.name = colNumber;
+        else if (normalized === "NUMBER" || normalized === "PHONE") columns.phone = colNumber;
+        else if (normalized === "HOSTEL") columns.hostel = colNumber;
+        else if (normalized.startsWith("ROOM")) columns.roomNo = colNumber;
+        else if (normalized === "BIRTHDAY") columns.birthday = colNumber;
+        else if (normalized.startsWith("SUBMIN") || normalized.includes("MINISTRY")) columns.subMinistry = colNumber;
+        else if (normalized === "YEAR" || normalized === "LEVEL") columns.year = colNumber;
+        else if (/^\d+$/.test(text)) weekColumns.push({ column: colNumber, weekNumber: Number(text) });
+      });
+      break;
+    }
+  }
+
+  if (headerRowNumber === null || !columns.name) {
+    throw new Error("Couldn't find a header row with a NAME column in this file.");
+  }
+
+  const dataRows = [];
+  for (let rowNumber = headerRowNumber + 1; rowNumber <= sheet.rowCount; rowNumber += 1) {
+    const row = sheet.getRow(rowNumber);
+    const name = String(row.getCell(columns.name).value || "").trim();
+    if (!name) continue;
+
+    const weeks = {};
+    weekColumns.forEach(({ column, weekNumber }) => {
+      const raw = row.getCell(column).value;
+      weeks[weekNumber] = raw !== null && raw !== undefined && String(raw).trim() !== "";
+    });
+
+    dataRows.push({
+      rowNumber,
+      name,
+      phone: columns.phone ? String(row.getCell(columns.phone).value || "").trim() : "",
+      hostel: columns.hostel ? String(row.getCell(columns.hostel).value || "").trim() : "",
+      roomNo: columns.roomNo ? String(row.getCell(columns.roomNo).value || "").trim() : "",
+      birthday: columns.birthday ? row.getCell(columns.birthday).value : null,
+      subMinistry: columns.subMinistry ? String(row.getCell(columns.subMinistry).value || "").trim() : "",
+      year: columns.year ? row.getCell(columns.year).value : null,
+      weeks,
+    });
+  }
+
+  const activeWeekNumbers = weekColumns
+    .map((w) => w.weekNumber)
+    .filter((weekNumber) => dataRows.some((row) => row.weeks[weekNumber]))
+    .sort((a, b) => a - b);
+
+  return { dataRows, activeWeekNumbers };
+}
+
 app.get("/members/import", requireAuth, (req, res) => {
   if (req.currentUser.access_role !== "super_admin") {
     return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
   }
 
   res.render("pages/import-members", {
-    pageTitle: "Bulk Import Members",
+    pageTitle: "Bulk Import",
     csrfToken: res.locals.csrfToken,
+    results: null,
   });
 });
 
-app.post("/members/import", requireAuth, upload.single("csvFile"), csrfProtection, (req, res) => {
+app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtection, async (req, res) => {
   if (req.currentUser.access_role !== "super_admin") {
     return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
   }
 
   if (!req.file) {
-    setFlash(req, "error", "Please choose a CSV file to import.");
+    setFlash(req, "error", "Please choose a file to import.");
     return res.redirect("/members/import");
   }
 
+  const isExcel = /\.xlsx$/i.test(req.file.originalname || "");
+
+  // --- Path 1: a fellowship attendance register (.xlsx), with weekly marks ---
+  if (isExcel) {
+    const fellowshipId = Number(req.body.fellowshipId || 0);
+    const weekOneStartInput = String(req.body.weekOneStart || "").trim();
+
+    if (!fellowshipId || !weekOneStartInput) {
+      setFlash(req, "error", "Please choose a Love Fellowship and the date of Week 1 before uploading a register.");
+      return res.redirect("/members/import");
+    }
+
+    let parsed;
+    try {
+      parsed = await parseAttendanceRegisterWorkbook(req.file.buffer);
+    } catch (error) {
+      setFlash(req, "error", `Could not read that file: ${error.message}`);
+      return res.redirect("/members/import");
+    }
+
+    const weekOneStart = getWeekStart(weekOneStartInput);
+    let membersCreated = 0;
+    let membersMatched = 0;
+    let attendanceMarksRecorded = 0;
+    const skipped = [];
+
+    const sessionIdByWeekNumber = {};
+    parsed.activeWeekNumbers.forEach((weekNumber) => {
+      const weekStart = addDaysToIsoDate(weekOneStart, 7 * (weekNumber - 1));
+      const weekEnd = getWeekEnd(weekStart);
+      db.prepare(
+        `
+          INSERT INTO attendance_sessions (fellowship_id, week_start, week_end, recorded_by_user_id)
+          VALUES (?, ?, ?, ?)
+          ON CONFLICT(fellowship_id, week_start)
+          DO UPDATE SET week_end = excluded.week_end, updated_at = CURRENT_TIMESTAMP
+        `
+      ).run(fellowshipId, weekStart, weekEnd, req.currentUser.id);
+      const session = db
+        .prepare("SELECT id FROM attendance_sessions WHERE fellowship_id = ? AND week_start = ?")
+        .get(fellowshipId, weekStart);
+      sessionIdByWeekNumber[weekNumber] = session.id;
+    });
+
+    const upsertAttendance = db.prepare(
+      `
+        INSERT INTO attendance_records (attendance_session_id, member_id, present)
+        VALUES (?, ?, ?)
+        ON CONFLICT(attendance_session_id, member_id)
+        DO UPDATE SET present = excluded.present, marked_at = CURRENT_TIMESTAMP
+      `
+    );
+
+    parsed.dataRows.forEach((row) => {
+      const { day, month } = parseDayMonth(row.birthday);
+      const level = levelFromYear(row.year);
+      const subMinistry = row.subMinistry
+        ? db.prepare("SELECT id FROM sub_ministries WHERE LOWER(name) = LOWER(?)").get(row.subMinistry)
+        : null;
+
+      let member = findExistingMemberInFellowship(fellowshipId, row.name, row.phone);
+
+      if (member) {
+        // Fill in gaps on the existing record without overwriting anything
+        // already on file — the register may have less detail than what an
+        // admin has already entered by hand.
+        db.prepare(
+          `
+            UPDATE members SET
+              hostel = COALESCE(NULLIF(hostel, ''), ?),
+              room_no = COALESCE(NULLIF(room_no, ''), ?),
+              birth_day = COALESCE(birth_day, ?),
+              birth_month = COALESCE(birth_month, ?),
+              level = COALESCE(NULLIF(level, ''), ?),
+              phone = COALESCE(NULLIF(phone, ''), ?),
+              updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `
+        ).run(row.hostel || null, row.roomNo || null, day, month, level || null, row.phone || null, member.id);
+        membersMatched += 1;
+      } else {
+        const result = db
+          .prepare(
+            `
+              INSERT INTO members (
+                full_name, hostel, room_no, birth_day, birth_month, level,
+                sub_ministry_id, fellowship_id, phone, status, approval_status
+              )
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active', 'approved')
+            `
+          )
+          .run(
+            row.name,
+            row.hostel || null,
+            row.roomNo || null,
+            day,
+            month,
+            level || null,
+            subMinistry ? subMinistry.id : null,
+            fellowshipId,
+            row.phone || null
+          );
+        member = { id: result.lastInsertRowid };
+        membersCreated += 1;
+      }
+
+      parsed.activeWeekNumbers.forEach((weekNumber) => {
+        upsertAttendance.run(sessionIdByWeekNumber[weekNumber], member.id, row.weeks[weekNumber] ? 1 : 0);
+        attendanceMarksRecorded += 1;
+      });
+    });
+
+    logAudit(
+      req.currentUser.id,
+      "attendance_register_imported",
+      "fellowship",
+      fellowshipId,
+      `${membersCreated} created, ${membersMatched} matched, ${parsed.activeWeekNumbers.length} week(s), ${attendanceMarksRecorded} marks`
+    );
+
+    setFlash(
+      req,
+      "success",
+      `Register imported: ${membersCreated} new member(s), ${membersMatched} matched to existing records, ${parsed.activeWeekNumbers.length} week(s) of attendance recorded.`
+    );
+
+    return res.render("pages/import-members", {
+      pageTitle: "Bulk Import",
+      csrfToken: res.locals.csrfToken,
+      results: {
+        type: "register",
+        membersCreated,
+        membersMatched,
+        weeksImported: parsed.activeWeekNumbers.length,
+        attendanceMarksRecorded,
+        skipped,
+      },
+    });
+  }
+
+  // --- Path 2: a plain member-list CSV (no attendance columns) ---
   const fileText = req.file.buffer.toString("utf8");
   const rows = fileText.split(/\r?\n/).filter((row) => row.trim().length > 0);
   if (rows.length < 2) {
@@ -1071,67 +1307,98 @@ app.post("/members/import", requireAuth, upload.single("csvFile"), csrfProtectio
 
   const headers = parseCsvLine(rows[0]).map((header) => header.toLowerCase().replace(/[^a-z0-9]+/g, ""));
   const inserted = [];
+  const flaggedDuplicates = [];
+  const skipped = [];
 
   for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
+    const lineNumber = rowIndex + 1;
     const values = parseCsvLine(rows[rowIndex]);
-    const item = Object.fromEntries(headers.map((header, index) => [header, values[index] || ""]));
+    const row = Object.fromEntries(headers.map((header, index) => [header, values[index] || ""]));
     const memberPayload = {
-      fullName: item.fullname || item.name || item.membername,
-      gender: item.gender,
-      birthDay: Number(item.birthday ? item.birthday.split("/")[0] : item.birthdayday || item.birthday),
-      birthMonth: Number(item.birthday ? item.birthday.split("/")[1] : item.birthmonth || item.birthmonthnumber),
-      hostel: item.hostel,
-      courseId: Number(item.courseid || item.course || "0"),
-      fellowshipId: Number(item.fellowshipid || item.lovefellowship || "0"),
-      subMinistryId: item.subministryid ? Number(item.subministryid) : null,
-      roleId: item.roleid ? Number(item.roleid) : null,
-      phone: item.phone,
-      email: item.email,
-      level: item.level,
-      status: item.status || "Active",
+      fullName: row.fullname || row.name || row.membername,
+      gender: row.gender,
+      birthDay: row.birthday ? Number(row.birthday.split("/")[0]) : row.birthdayday ? Number(row.birthdayday) : null,
+      birthMonth: row.birthday ? Number(row.birthday.split("/")[1]) : row.birthmonth ? Number(row.birthmonth) : null,
+      hostel: row.hostel,
+      courseId: row.courseid || row.course ? Number(row.courseid || row.course) : null,
+      fellowshipId: Number(row.fellowshipid || row.lovefellowship || "0"),
+      subMinistryId: row.subministryid ? Number(row.subministryid) : null,
+      roleId: row.roleid ? Number(row.roleid) : null,
+      phone: row.phone,
+      email: row.email,
+      level: row.level,
+      status: row.status || "Active",
     };
 
-    if (!memberPayload.fullName || !memberPayload.email || !memberPayload.courseId || !memberPayload.fellowshipId) {
+    const rowLabel = memberPayload.fullName || `Row ${lineNumber}`;
+
+    if (!memberPayload.fullName || !memberPayload.fellowshipId) {
+      skipped.push({ line: lineNumber, name: rowLabel, reason: "Missing a required field (name or fellowship)." });
       continue;
     }
 
-    const validated = validateMemberPayload(memberPayload);
-    if (!validated) {
-      const duplicates = detectDuplicateMembers(memberPayload);
-      db.prepare(
-        `
-          INSERT INTO members (
-            full_name, gender, birth_day, birth_month, hostel,
-            course_id, fellowship_id, sub_ministry_id, role_id,
-            phone, email, level, status, approval_status,
-            duplicate_flag, duplicate_notes
-          )
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-        `
-      ).run(
-        memberPayload.fullName,
-        memberPayload.gender,
-        memberPayload.birthDay,
-        memberPayload.birthMonth,
-        memberPayload.hostel,
-        memberPayload.courseId,
-        memberPayload.fellowshipId,
-        memberPayload.subMinistryId,
-        memberPayload.roleId,
-        memberPayload.phone,
-        memberPayload.email,
-        memberPayload.level,
-        memberPayload.status,
-        duplicates.length ? 1 : 0,
-        duplicates.length ? duplicates.map((item) => item.full_name).join("; ") : null
-      );
-      inserted.push(memberPayload.fullName);
+    const validationError = validateMemberPayload(memberPayload);
+    if (validationError) {
+      skipped.push({ line: lineNumber, name: rowLabel, reason: validationError });
+      continue;
+    }
+
+    const duplicates = detectDuplicateMembers(memberPayload);
+    db.prepare(
+      `
+        INSERT INTO members (
+          full_name, gender, birth_day, birth_month, hostel,
+          course_id, fellowship_id, sub_ministry_id, role_id,
+          phone, email, level, status, approval_status,
+          duplicate_flag, duplicate_notes
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)
+      `
+    ).run(
+      memberPayload.fullName,
+      memberPayload.gender || null,
+      memberPayload.birthDay,
+      memberPayload.birthMonth,
+      memberPayload.hostel || null,
+      memberPayload.courseId,
+      memberPayload.fellowshipId,
+      memberPayload.subMinistryId,
+      memberPayload.roleId,
+      memberPayload.phone || null,
+      memberPayload.email || null,
+      memberPayload.level || null,
+      memberPayload.status,
+      duplicates.length ? 1 : 0,
+      duplicates.length ? duplicates.map((duplicate) => duplicate.full_name).join("; ") : null
+    );
+
+    if (duplicates.length) {
+      flaggedDuplicates.push(rowLabel);
+    } else {
+      inserted.push(rowLabel);
     }
   }
 
-  logAudit(req.currentUser.id, "members_imported", "member", null, `${inserted.length} rows imported`);
-  setFlash(req, "success", `Bulk import complete. ${inserted.length} members added for review.`);
-  return res.redirect("/members");
+  logAudit(
+    req.currentUser.id,
+    "members_imported",
+    "member",
+    null,
+    `${inserted.length + flaggedDuplicates.length} inserted, ${skipped.length} skipped`
+  );
+
+  const totalProcessed = inserted.length + flaggedDuplicates.length;
+  setFlash(
+    req,
+    skipped.length > 0 ? "warning" : "success",
+    `Import complete: ${totalProcessed} member(s) added, ${skipped.length} row(s) skipped.`
+  );
+
+  return res.render("pages/import-members", {
+    pageTitle: "Bulk Import",
+    csrfToken: res.locals.csrfToken,
+    results: { type: "members", inserted, flaggedDuplicates, skipped },
+  });
 });
 
 app.get("/members/:id", requireAuth, (req, res) => {
@@ -1250,7 +1517,7 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
   db.prepare(
     `
       UPDATE members
-      SET full_name = ?, gender = ?, birth_day = ?, birth_month = ?, hostel = ?,
+      SET full_name = ?, gender = ?, birth_day = ?, birth_month = ?, hostel = ?, room_no = ?,
           course_id = ?, fellowship_id = ?, sub_ministry_id = ?, role_id = ?,
           phone = ?, email = ?, level = ?, status = ?, duplicate_flag = ?,
           duplicate_notes = ?, updated_at = CURRENT_TIMESTAMP
@@ -1258,17 +1525,18 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
     `
   ).run(
     payload.fullName,
-    payload.gender,
+    payload.gender || null,
     payload.birthDay,
     payload.birthMonth,
-    payload.hostel,
+    payload.hostel || null,
+    payload.roomNo || null,
     payload.courseId,
     payload.fellowshipId,
     payload.subMinistryId,
     payload.roleId,
-    payload.phone,
-    payload.email,
-    payload.level,
+    payload.phone || null,
+    payload.email || null,
+    payload.level || null,
     payload.status,
     duplicates.length ? 1 : 0,
     duplicateNotes,
@@ -1349,7 +1617,7 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
         SELECT members.*, courses.name AS course_name, sub_ministries.name AS sub_ministry_name,
                roles.display_name AS role_name, roles.role_type
         FROM members
-        JOIN courses ON courses.id = members.course_id
+        LEFT JOIN courses ON courses.id = members.course_id
         LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
         LEFT JOIN roles ON roles.id = members.role_id
         WHERE members.fellowship_id = ?
@@ -1376,6 +1644,7 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
     totalMembers: members.length,
     maleMembers: members.filter((member) => member.gender === "Male").length,
     femaleMembers: members.filter((member) => member.gender === "Female").length,
+    unspecifiedGenderMembers: members.filter((member) => member.gender !== "Male" && member.gender !== "Female").length,
     choirMembers: members.filter(
       (member) => member.sub_ministry_name === "Aloud Choir"
     ).length,
@@ -1632,7 +1901,7 @@ app.get("/exports/members.csv", requireAuth, (req, res) => {
   const rows = members.map((member) => [
     member.full_name,
     member.gender,
-    `${member.birth_day}/${member.birth_month}`,
+    formatBirthdayForExport(member.birth_day, member.birth_month),
     member.hostel,
     member.course_name,
     member.fellowship_name,
@@ -1700,7 +1969,7 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
     members.forEach((member) => {
       sheet.addRow({
         ...member,
-        birthday: `${member.birth_day}/${member.birth_month}`,
+        birthday: formatBirthdayForExport(member.birth_day, member.birth_month),
         sub_ministry_name: member.sub_ministry_name || "None",
         role_name: member.role_name || "Regular Member",
       });
@@ -1724,7 +1993,7 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
 });
 
 app.get("/health", (_req, res) => {
-  res.json({ ok: true, publicRegistrationOnly: PUBLIC_REGISTRATION_ONLY });
+  res.json({ ok: true });
 });
 
 app.use((req, res) => {
@@ -1747,8 +2016,5 @@ app.listen(PORT, HOST, () => {
   console.log(`Public binding enabled on ${HOST}:${PORT}`);
   if (networkUrls.length > 0) {
     console.log(`Reach it on your network via: ${networkUrls.join(", ")}`);
-  }
-  if (PUBLIC_REGISTRATION_ONLY) {
-    console.log("External public access is restricted to /register.");
   }
 });

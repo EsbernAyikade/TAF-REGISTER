@@ -2,9 +2,14 @@
 <%- include('../partials/header') %>
 <%- include('../partials/flash') %>
 <main class="container page narrow-page">
-  <section class="card">
-    <h1>Server error</h1>
-    <p>Please try again.</p>
+  <section class="card error-card">
+    <span class="eyebrow">Server issue</span>
+    <h1>Something went wrong on our end</h1>
+    <p>Please try again, or contact an admin if the problem keeps happening.</p>
+    <div class="button-row">
+      <a href="/dashboard" class="button button-accent">Back to dashboard</a>
+      <a href="/login" class="button button-outline">Login again</a>
+    </div>
   </section>
 </main>
 <%- include('../partials/footer') %>

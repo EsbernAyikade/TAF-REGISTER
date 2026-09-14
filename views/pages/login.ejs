@@ -1,40 +1,71 @@
-<%- include('../partials/head', { pageTitle }) %>
-<%- include('../partials/header') %>
-<%- include('../partials/flash') %>
+<%- include('../partials/head', { pageTitle, bodyClass: 'public-page' }) %>
+  <header class="public-header">
+    <div class="container public-header-inner">
+      <a href="/login" class="brand brand-light" aria-label="Teens Aloud Foundation home">
+        <img
+          src="/images/ta-logo.jpg"
+          alt="Teens Aloud Foundation logo"
+          class="brand-logo"
+          onerror="this.onerror=null;this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 58 58%22%3E%3Crect width=%2258%22 height=%2258%22 rx=%2214%22 fill=%22%230f5fd8%22/%3E%3Ctext x=%2229%22 y=%2238%22 font-family=%22Arial,sans-serif%22 font-size=%2224%22 font-weight=%22700%22 fill=%22white%22 text-anchor=%22middle%22%3ETA%3C/text%3E%3C/svg%3E'"
+        />
+        <div>
+          <strong>Teens Aloud Foundation</strong>
+          <span>Member Portal</span>
+        </div>
+      </a>
+    </div>
+  </header>
 
-<main class="container page narrow-page">
-  <section class="card auth-card">
-    <div class="section-heading">
-      <div>
+  <%- include('../partials/flash') %>
+
+  <main class="container page auth-shell">
+    <section class="card auth-card" aria-label="Login form">
+      <div class="auth-brand">
         <span class="eyebrow">Secure Access</span>
-        <h1>Login to the Member Database</h1>
-        <p class="muted">Access the TAF member records, fellowship updates, and attendance reporting.</p>
+        <h1>Sign in to TAF Register</h1>
       </div>
-    </div>
 
-    <form action="/login" method="post" class="stack">
-      <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
-      <label>
-        <span>Email</span>
-        <input type="email" name="email" required />
-      </label>
+      <form action="/login" method="post" class="stack" novalidate>
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
 
-      <label>
-        <span>Password</span>
-        <input type="password" name="password" required />
-      </label>
+        <label>
+          <span>Email</span>
+          <input type="email" name="email" required autocomplete="email" placeholder="name@teensaloud.org" />
+        </label>
 
-      <button type="submit" class="button">Login</button>
-    </form>
+        <label>
+          <span>Password</span>
+          <div class="password-wrap">
+            <input type="password" name="password" id="login-password" required autocomplete="current-password" placeholder="Enter your password" />
+            <button type="button" class="password-toggle" aria-label="Show password" data-toggle-password="login-password">Show</button>
+          </div>
+        </label>
 
-    <div class="hint-box">
-      <strong>Seeded access</strong>
-      <p>Super Admin: admin@teensaloud.local</p>
-      <p>Fellowship Admin: gaza.admin@teensaloud.local</p>
-      <p>Viewer: viewer@teensaloud.local</p>
-      <p>Use the strong password values configured in your environment or .env file.</p>
-    </div>
-  </section>
-</main>
+        <button type="submit" class="button button-accent">Log In</button>
+      </form>
+
+      <p class="fine-print">Forgot password? Contact your administrator for help.</p>
+
+      <% if (typeof isProduction !== 'undefined' && !isProduction) { %>
+        <div class="hint-box">
+          <strong>Local development only</strong>
+          <p>Seeded accounts use the password values configured in your local .env file.</p>
+        </div>
+      <% } %>
+    </section>
+  </main>
+
+  <script>
+    document.querySelectorAll('[data-toggle-password]').forEach((toggle) => {
+      toggle.addEventListener('click', () => {
+        const input = document.getElementById(toggle.dataset.togglePassword);
+        if (!input) return;
+        const isPassword = input.type === 'password';
+        input.type = isPassword ? 'text' : 'password';
+        toggle.textContent = isPassword ? 'Hide' : 'Show';
+        toggle.setAttribute('aria-label', isPassword ? 'Hide password' : 'Show password');
+      });
+    });
+  </script>
 
 <%- include('../partials/footer') %>

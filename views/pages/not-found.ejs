@@ -1,9 +1,15 @@
 <%- include('../partials/head', { pageTitle }) %>
 <%- include('../partials/header') %>
+<%- include('../partials/flash') %>
 <main class="container page narrow-page">
-  <section class="card">
+  <section class="card error-card">
+    <span class="eyebrow">404</span>
     <h1>Page not found</h1>
-    <p>The page you requested could not be found.</p>
+    <p>The page you requested could not be found. Head back to a safe place and try again.</p>
+    <div class="button-row">
+      <a href="/dashboard" class="button button-accent">Return to dashboard</a>
+      <a href="/login" class="button button-outline">Go to login</a>
+    </div>
   </section>
 </main>
 <%- include('../partials/footer') %>

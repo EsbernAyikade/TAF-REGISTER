@@ -17,6 +17,14 @@
             <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
             <button type="submit" class="button button-outline">Approve</button>
           </form>
+          <form
+            action="/members/<%= member.id %>/reject"
+            method="post"
+            data-confirm="Reject <%= member.full_name %>'s registration? This can be reversed later by editing the record."
+          >
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+            <button type="submit" class="button button-outline">Reject</button>
+          </form>
         <% } %>
       </div>
     <% } %>
@@ -26,14 +34,15 @@
     <article class="card">
       <h2>Member Information</h2>
       <dl class="detail-grid">
-        <div><dt>Gender</dt><dd><%= member.gender %></dd></div>
+        <div><dt>Gender</dt><dd><%= member.gender || '—' %></dd></div>
         <div><dt>Birthday</dt><dd><%= formatBirthday(member.birth_day, member.birth_month) %></dd></div>
-        <div><dt>Hostel</dt><dd><%= member.hostel %></dd></div>
-        <div><dt>Course</dt><dd><%= member.course_name %></dd></div>
+        <div><dt>Hostel</dt><dd><%= member.hostel || '—' %></dd></div>
+        <div><dt>Room No.</dt><dd><%= member.room_no || '—' %></dd></div>
+        <div><dt>Course</dt><dd><%= member.course_name || '—' %></dd></div>
         <div><dt>Sub-ministry</dt><dd><%= member.sub_ministry_name || 'None' %></dd></div>
-        <div><dt>Phone</dt><dd><%= member.phone %></dd></div>
-        <div><dt>Email</dt><dd><%= member.email %></dd></div>
-        <div><dt>Level</dt><dd><%= member.level %></dd></div>
+        <div><dt>Phone</dt><dd><%= member.phone || '—' %></dd></div>
+        <div><dt>Email</dt><dd><%= member.email || '—' %></dd></div>
+        <div><dt>Level</dt><dd><%= member.level || '—' %></dd></div>
         <div><dt>Status</dt><dd><%= member.status %></dd></div>
         <div><dt>Approval</dt><dd><%= member.approval_status %></dd></div>
         <div><dt>Date Joined</dt><dd><%= formatDate(member.joined_at) %></dd></div>

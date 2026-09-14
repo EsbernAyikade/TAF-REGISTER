@@ -63,6 +63,20 @@ function getDefaultPassword() {
   return password;
 }
 
+// Every seeded account must have an explicit, unique password source in
+// production. No account is allowed to silently fall back to a hardcoded
+// string once NODE_ENV=production — a missing env var should fail the
+// deploy loudly instead of activating a known/guessable password.
+function requireSeedPassword(envVarName, devFallback) {
+  const password = process.env[envVarName] || (isProduction ? null : devFallback);
+
+  if (isProduction && !password) {
+    throw new Error(`${envVarName} must be set in production.`);
+  }
+
+  return password;
+}
+
 function getSeedUsers() {
   const gazaFellowship = db
     .prepare("SELECT id FROM fellowships WHERE slug = ?")
@@ -85,7 +99,7 @@ function getSeedUsers() {
       fullName: "Gaza Fellowship Admin",
       email: "gaza.admin@teensaloud.local",
       passwordHash: bcrypt.hashSync(
-        process.env.FELLOWSHIP_ADMIN_PASSWORD || "GazaLF_2026!Secure",
+        requireSeedPassword("FELLOWSHIP_ADMIN_PASSWORD", "GazaLF_2026!Secure"),
         10
       ),
       accessRole: "fellowship_admin",
@@ -96,7 +110,7 @@ function getSeedUsers() {
       fullName: "Records Viewer",
       email: "viewer@teensaloud.local",
       passwordHash: bcrypt.hashSync(
-        process.env.VIEWER_PASSWORD || "Viewer_2026!Secure",
+        requireSeedPassword("VIEWER_PASSWORD", "Viewer_2026!Secure"),
         10
       ),
       accessRole: "viewer",
@@ -139,19 +153,20 @@ function initializeDatabase() {
     CREATE TABLE IF NOT EXISTS members (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       full_name TEXT NOT NULL,
-      gender TEXT NOT NULL,
-      birth_day INTEGER NOT NULL,
-      birth_month INTEGER NOT NULL,
-      hostel TEXT NOT NULL,
-      course_id INTEGER NOT NULL,
+      gender TEXT,
+      birth_day INTEGER,
+      birth_month INTEGER,
+      hostel TEXT,
+      room_no TEXT,
+      course_id INTEGER,
       fellowship_id INTEGER NOT NULL,
       sub_ministry_id INTEGER,
       role_id INTEGER,
-      phone TEXT NOT NULL,
-      email TEXT NOT NULL,
-      level TEXT NOT NULL,
+      phone TEXT,
+      email TEXT,
+      level TEXT,
       status TEXT NOT NULL DEFAULT 'Active',
-      approval_status TEXT NOT NULL DEFAULT 'pending',
+      approval_status TEXT NOT NULL DEFAULT 'approved',
       duplicate_flag INTEGER NOT NULL DEFAULT 0,
       duplicate_notes TEXT,
       joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -217,8 +232,92 @@ function initializeDatabase() {
     db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 1");
   }
 
+  migrateMembersTableToRelaxedSchema();
+
   seedReferenceData();
   seedUsers();
+}
+
+// Earlier versions of this schema required gender, birth_day, birth_month,
+// hostel, course_id, phone, and email on every member. Real bulk registers
+// (paper attendance books digitized into spreadsheets) routinely omit course,
+// and frequently omit phone/birthday/hostel too. Rather than force admins to
+// invent placeholder data, this migration rebuilds the members table with
+// those columns made optional, preserving every existing row and ID exactly.
+// SQLite can't relax a NOT NULL constraint with a plain ALTER TABLE, so a
+// full table rebuild (rename -> recreate -> copy -> drop) is the standard
+// way to do this safely.
+function migrateMembersTableToRelaxedSchema() {
+  const tableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'members'")
+    .get();
+  if (!tableExists) {
+    return;
+  }
+
+  const columns = db.prepare("PRAGMA table_info(members)").all();
+  const hasRoomNo = columns.some((column) => column.name === "room_no");
+  const genderColumn = columns.find((column) => column.name === "gender");
+  const needsRelaxedConstraints = genderColumn && genderColumn.notnull === 1;
+
+  if (hasRoomNo && !needsRelaxedConstraints) {
+    return;
+  }
+
+  const migrate = db.transaction(() => {
+    if (needsRelaxedConstraints) {
+      db.exec("ALTER TABLE members RENAME TO members_legacy");
+      db.exec(`
+        CREATE TABLE members (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          full_name TEXT NOT NULL,
+          gender TEXT,
+          birth_day INTEGER,
+          birth_month INTEGER,
+          hostel TEXT,
+          room_no TEXT,
+          course_id INTEGER,
+          fellowship_id INTEGER NOT NULL,
+          sub_ministry_id INTEGER,
+          role_id INTEGER,
+          phone TEXT,
+          email TEXT,
+          level TEXT,
+          status TEXT NOT NULL DEFAULT 'Active',
+          approval_status TEXT NOT NULL DEFAULT 'approved',
+          duplicate_flag INTEGER NOT NULL DEFAULT 0,
+          duplicate_notes TEXT,
+          joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          approved_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (course_id) REFERENCES courses(id),
+          FOREIGN KEY (fellowship_id) REFERENCES fellowships(id),
+          FOREIGN KEY (sub_ministry_id) REFERENCES sub_ministries(id),
+          FOREIGN KEY (role_id) REFERENCES roles(id)
+        );
+      `);
+      db.exec(`
+        INSERT INTO members (
+          id, full_name, gender, birth_day, birth_month, hostel, course_id,
+          fellowship_id, sub_ministry_id, role_id, phone, email, level,
+          status, approval_status, duplicate_flag, duplicate_notes,
+          joined_at, approved_at, created_at, updated_at
+        )
+        SELECT
+          id, full_name, gender, birth_day, birth_month, hostel, course_id,
+          fellowship_id, sub_ministry_id, role_id, phone, email, level,
+          status, approval_status, duplicate_flag, duplicate_notes,
+          joined_at, approved_at, created_at, updated_at
+        FROM members_legacy;
+      `);
+      db.exec("DROP TABLE members_legacy");
+    } else if (!hasRoomNo) {
+      db.exec("ALTER TABLE members ADD COLUMN room_no TEXT");
+    }
+  });
+
+  migrate();
 }
 
 function seedReferenceData() {
@@ -264,23 +363,92 @@ function seedReferenceData() {
       fellowshipId
     );
   });
+
+  deduplicateRoles();
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS roles_unique_scope_idx
+    ON roles (role_type, position_name, scope_type, IFNULL(fellowship_id, -1))
+  `);
 }
 
+// SQLite treats NULLs as distinct inside a UNIQUE constraint, so the existing
+// table-level UNIQUE(...) on roles does not prevent duplicate global roles
+// where fellowship_id is NULL. Clean up any historical duplicates and keep all
+// member role assignments pointing at the surviving row before we add an
+// expression-based unique index that collapses NULL fellowship scopes.
+function deduplicateRoles() {
+  const duplicateGroups = db.prepare(`
+    SELECT
+      role_type,
+      position_name,
+      scope_type,
+      fellowship_id,
+      MIN(id) AS keep_id
+    FROM roles
+    GROUP BY role_type, position_name, scope_type, fellowship_id
+    HAVING COUNT(*) > 1
+  `).all();
+
+  if (duplicateGroups.length === 0) {
+    return;
+  }
+
+  const updateMemberRoles = db.prepare(
+    "UPDATE members SET role_id = ? WHERE role_id = ?"
+  );
+  const deleteRole = db.prepare("DELETE FROM roles WHERE id = ?");
+
+  const dedupe = db.transaction(() => {
+    duplicateGroups.forEach((group) => {
+      const duplicateIds = db.prepare(`
+        SELECT id
+        FROM roles
+        WHERE role_type = ?
+          AND position_name = ?
+          AND scope_type = ?
+          AND (
+            (fellowship_id IS NULL AND ? IS NULL)
+            OR fellowship_id = ?
+          )
+          AND id != ?
+        ORDER BY id
+      `).all(
+        group.role_type,
+        group.position_name,
+        group.scope_type,
+        group.fellowship_id,
+        group.fellowship_id,
+        group.keep_id
+      );
+
+      duplicateIds.forEach(({ id }) => {
+        updateMemberRoles.run(group.keep_id, id);
+        deleteRole.run(id);
+      });
+    });
+  });
+
+  dedupe();
+}
+
+// Seeds the three baseline accounts if they don't already exist. Deliberately
+// uses INSERT OR IGNORE rather than an upsert: this function runs on every
+// app startup, and an upsert that overwrites password_hash/must_change_password
+// on conflict would silently revert any password an admin has already set via
+// the in-app "Change Password" flow back to the seed value on every restart
+// (redeploys, env var changes, etc. on Render) — forcing them through the
+// mandatory password-change screen again and again. Once an account exists,
+// changing its SUPER_ADMIN_PASSWORD/etc. env var has no further effect; use
+// the admin "Reset Password" action (or direct DB access, for a fully
+// locked-out super admin) to change an existing account's password instead.
 function seedUsers() {
-  const upsertUser = db.prepare(`
-    INSERT INTO users (full_name, email, password_hash, access_role, fellowship_id, must_change_password)
+  const insertUser = db.prepare(`
+    INSERT OR IGNORE INTO users (full_name, email, password_hash, access_role, fellowship_id, must_change_password)
     VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(email)
-    DO UPDATE SET
-      full_name = excluded.full_name,
-      password_hash = excluded.password_hash,
-      access_role = excluded.access_role,
-      fellowship_id = excluded.fellowship_id,
-      must_change_password = excluded.must_change_password
   `);
 
   getSeedUsers().forEach((user) => {
-    upsertUser.run(
+    insertUser.run(
       user.fullName,
       user.email,
       user.passwordHash,

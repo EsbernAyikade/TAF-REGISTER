@@ -170,7 +170,13 @@
         <tbody>
           <% if (members.length === 0) { %>
             <tr>
-              <td colspan="8" class="muted">No members match the selected filters.</td>
+              <td colspan="8">
+                <div class="empty-state">
+                  <strong>No members match the selected filters</strong>
+                  <p class="muted">Try clearing a filter or broadening your search.</p>
+                  <a href="/members" class="button button-outline button-small">Clear filters</a>
+                </div>
+              </td>
             </tr>
           <% } %>
           <% members.forEach((member) => { %>
@@ -185,7 +191,11 @@
               <td data-label="Role"><%= member.role_name || 'Regular Member' %></td>
               <td data-label="Course"><%= member.course_name %></td>
               <td data-label="Level"><%= member.level %></td>
-              <td data-label="Status"><%= member.status %></td>
+              <td data-label="Status">
+                <span class="badge badge-<%= member.status === 'Active' ? 'success' : member.status === 'Inactive' ? 'warning' : 'info' %>">
+                  <%= member.status %>
+                </span>
+              </td>
               <td data-label="Approval">
                 <span class="badge badge-<%= member.approval_status === 'approved' ? 'success' : member.approval_status === 'pending' ? 'warning' : 'danger' %>">
                   <%= member.approval_status %>
@@ -200,6 +210,14 @@
                       <form action="/members/<%= member.id %>/approve" method="post">
                         <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
                         <button type="submit" class="button button-small">Approve</button>
+                      </form>
+                      <form
+                        action="/members/<%= member.id %>/reject"
+                        method="post"
+                        data-confirm="Reject <%= member.full_name %>'s registration? This can be reversed later by editing the record."
+                      >
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+                        <button type="submit" class="button button-small button-outline">Reject</button>
                       </form>
                     <% } %>
                   <% } %>

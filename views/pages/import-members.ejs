@@ -3,24 +3,170 @@
 <%- include('../partials/flash') %>
 
 <main class="container page narrow-page">
+  <nav class="page-breadcrumbs" aria-label="Breadcrumb">
+    <a href="/dashboard">Dashboard</a>
+    <span class="divider">/</span>
+    <span>Bulk Import</span>
+  </nav>
+
+  <section class="section-heading">
+    <div>
+      <span class="eyebrow">Import</span>
+      <h1>Bulk Import</h1>
+      <p>Upload a fellowship's weekly attendance register, or a plain CSV list of members.</p>
+    </div>
+  </section>
+
   <section class="card">
     <div class="section-heading">
       <div>
-        <span class="eyebrow">Import</span>
-        <h1>Bulk Member Import</h1>
+        <h2>Option 1 — Weekly Attendance Register (.xlsx)</h2>
+        <p>
+          For the register spreadsheet a fellowship already keeps: a NAME column, optional NUMBER / HOSTEL /
+          ROOM NO. / BIRTHDAY / SUBMINISTRY / YEAR columns, and one numbered column per meeting week.
+          Any mark in a week's column counts as present for that week; a blank counts as absent.
+          Uploading the same fellowship's register again later updates existing members instead of duplicating them.
+        </p>
+      </div>
+    </div>
+
+    <form action="/members/import" method="post" enctype="multipart/form-data" class="stack">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+      <div class="form-grid">
+        <label>
+          <span>Love Fellowship</span>
+          <select name="fellowshipId" required>
+            <option value="">Select fellowship</option>
+            <% fellowships.forEach((fellowship) => { %>
+              <option value="<%= fellowship.id %>"><%= fellowship.name %></option>
+            <% }) %>
+          </select>
+        </label>
+        <label>
+          <span>Date of Week 1</span>
+          <input type="date" name="weekOneStart" required />
+        </label>
+      </div>
+      <label>
+        <span>Register file (.xlsx)</span>
+        <input type="file" name="importFile" accept=".xlsx" required />
+      </label>
+      <div class="form-actions">
+        <button type="submit" class="button button-accent">Import Register</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="card">
+    <div class="section-heading">
+      <div>
+        <h2>Option 2 — Plain Member List (.csv)</h2>
+        <p>Expected columns: full name, love fellowship, and optionally gender, birthday, hostel, course, phone, email, level, status.</p>
       </div>
     </div>
 
     <form action="/members/import" method="post" enctype="multipart/form-data" class="stack">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
       <label>
-        <span>Select CSV file</span>
-        <input type="file" name="csvFile" accept=".csv,text/csv" required />
+        <span>CSV file</span>
+        <input type="file" name="importFile" accept=".csv,text/csv" required />
       </label>
-      <p class="muted">Expected columns: full name, gender, birth day, birth month, hostel, course, love fellowship, phone, email, level, status.</p>
-      <button type="submit" class="button">Import Members</button>
+      <div class="form-actions">
+        <button type="submit" class="button">Import Members</button>
+      </div>
     </form>
   </section>
+
+  <% if (typeof results !== 'undefined' && results) { %>
+    <% if (results.type === 'register') { %>
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <h2>Register Import Results</h2>
+          </div>
+        </div>
+        <div class="stats-grid">
+          <article class="stat-card accent-green">
+            <span>New Members</span>
+            <strong><%= results.membersCreated %></strong>
+          </article>
+          <article class="stat-card accent-blue">
+            <span>Matched Existing</span>
+            <strong><%= results.membersMatched %></strong>
+          </article>
+          <article class="stat-card accent-orange">
+            <span>Weeks Imported</span>
+            <strong><%= results.weeksImported %></strong>
+          </article>
+          <article class="stat-card accent-slate">
+            <span>Attendance Marks Recorded</span>
+            <strong><%= results.attendanceMarksRecorded %></strong>
+          </article>
+        </div>
+      </section>
+    <% } else { %>
+      <section class="card">
+        <div class="section-heading">
+          <div>
+            <h2>Member Import Results</h2>
+            <p>
+              <%= results.inserted.length %> added ·
+              <%= results.flaggedDuplicates.length %> added but flagged as possible duplicates ·
+              <%= results.skipped.length %> skipped
+            </p>
+          </div>
+        </div>
+
+        <% if (results.flaggedDuplicates.length > 0) { %>
+          <div class="form-section">
+            <h3>Added, flagged as possible duplicates</h3>
+            <div class="chips">
+              <% results.flaggedDuplicates.forEach((name) => { %>
+                <span class="chip badge-warning"><%= name %></span>
+              <% }) %>
+            </div>
+          </div>
+        <% } %>
+
+        <% if (results.skipped.length > 0) { %>
+          <div class="form-section">
+            <h3>Skipped rows</h3>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Row</th>
+                    <th>Name</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% results.skipped.forEach((row) => { %>
+                    <tr>
+                      <td data-label="Row"><%= row.line %></td>
+                      <td data-label="Name"><%= row.name %></td>
+                      <td data-label="Reason"><%= row.reason %></td>
+                    </tr>
+                  <% }) %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        <% } %>
+
+        <% if (results.inserted.length > 0) { %>
+          <div class="form-section">
+            <h3>Added successfully</h3>
+            <div class="chips">
+              <% results.inserted.forEach((name) => { %>
+                <span class="chip"><%= name %></span>
+              <% }) %>
+            </div>
+          </div>
+        <% } %>
+      </section>
+    <% } %>
+  <% } %>
 </main>
 
 <%- include('../partials/footer') %>

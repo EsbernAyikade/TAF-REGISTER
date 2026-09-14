@@ -25,12 +25,16 @@
         <tbody>
           <% users.forEach((user) => { %>
             <tr>
-              <td><%= user.full_name %></td>
-              <td><%= user.email %></td>
-              <td><%= user.access_role %></td>
-              <td><%= user.fellowship_name || '—' %></td>
-              <td>
-                <form action="/admin/users/<%= user.id %>/reset-password" method="post">
+              <td data-label="Name"><%= user.full_name %></td>
+              <td data-label="Email"><%= user.email %></td>
+              <td data-label="Role"><%= user.access_role %></td>
+              <td data-label="Fellowship"><%= user.fellowship_name || '—' %></td>
+              <td data-label="Actions">
+                <form
+                  action="/admin/users/<%= user.id %>/reset-password"
+                  method="post"
+                  data-confirm="Reset the password for <%= user.full_name %>? They will need to set a new password on next login."
+                >
                   <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
                   <button type="submit" class="button button-small button-outline">Reset Password</button>
                 </form>

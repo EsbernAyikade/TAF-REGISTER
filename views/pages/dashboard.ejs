@@ -14,6 +14,9 @@
     <div class="button-row">
       <a href="/members/new" class="button">Add Member</a>
       <a href="/members" class="button button-outline">Open Directory</a>
+      <% if (currentUser.access_role === 'super_admin') { %>
+        <a href="/members/import" class="button button-outline">Bulk Import</a>
+      <% } %>
       <a href="/exports/members.xlsx" class="button button-outline">Export Excel</a>
     </div>
   </section>
@@ -49,30 +52,50 @@
           <p>Cross-fellowship turnout for the current week.</p>
         </div>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Love Fellowship</th>
-              <th>Present</th>
-              <th>Members</th>
-              <th>Rate</th>
-              <th>Headline</th>
-            </tr>
-          </thead>
-          <tbody>
-            <% attendanceSummary.forEach((item) => { %>
+
+      <% if (attendanceSummary.length === 0) { %>
+        <div class="empty-state">
+          <strong>No attendance data yet</strong>
+          <p class="muted">Attendance comparisons will appear once fellowships start marking weeks.</p>
+        </div>
+      <% } else { %>
+        <div class="trend-list attendance-chart">
+          <% attendanceSummary.forEach((item) => { %>
+            <div class="trend-row">
+              <div class="trend-meta">
+                <strong><a href="/fellowships/<%= item.slug %>"><%= item.name.replace(' Love Fellowship', '') %></a></strong>
+                <span><%= item.present_total %> of <%= item.member_total %> (<%= item.rate %>%)</span>
+              </div>
+              <div class="trend-bar">
+                <span style="width: <%= item.rate %>%"></span>
+              </div>
+            </div>
+          <% }) %>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
               <tr>
-                <td><a href="/fellowships/<%= item.slug %>"><%= item.name %></a></td>
-                <td><%= item.present_total %></td>
-                <td><%= item.member_total %></td>
-                <td><%= item.rate %>%</td>
-                <td><%= item.headline %></td>
+                <th>Love Fellowship</th>
+                <th>Present</th>
+                <th>Members</th>
+                <th>Rate</th>
               </tr>
-            <% }) %>
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              <% attendanceSummary.forEach((item) => { %>
+                <tr>
+                  <td data-label="Love Fellowship"><a href="/fellowships/<%= item.slug %>"><%= item.name %></a></td>
+                  <td data-label="Present"><%= item.present_total %></td>
+                  <td data-label="Members"><%= item.member_total %></td>
+                  <td data-label="Rate"><%= item.rate %>%</td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      <% } %>
     </article>
 
     <article class="card">
@@ -159,6 +182,14 @@
               <form action="/members/<%= item.id %>/approve" method="post">
                 <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
                 <button type="submit" class="button">Approve</button>
+              </form>
+              <form
+                action="/members/<%= item.id %>/reject"
+                method="post"
+                data-confirm="Reject <%= item.full_name %>'s registration?"
+              >
+                <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+                <button type="submit" class="button button-outline">Reject</button>
               </form>
             </div>
           </div>

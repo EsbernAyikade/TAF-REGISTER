@@ -1,108 +1,175 @@
-<div class="form-grid">
-  <label>
-    <span>Full Name</span>
-    <input type="text" name="fullName" value="<%= member.full_name || '' %>" required />
-  </label>
+<% const shouldShowStatusField = typeof showStatusField !== 'undefined' && showStatusField; %>
+<% const shouldShowProgress = typeof showProgress !== 'undefined' && showProgress; %>
 
-  <label>
-    <span>Gender</span>
-    <select name="gender" required>
-      <option value="">Select gender</option>
-      <% genderOptions.forEach((option) => { %>
-        <option value="<%= option %>" <%= member.gender === option ? 'selected' : '' %>><%= option %></option>
-      <% }) %>
-    </select>
-  </label>
+<% if (shouldShowProgress) { %>
+  <div class="progress-indicator" aria-label="Registration progress">
+    <span class="active"></span>
+    <span></span>
+    <span></span>
+  </div>
+<% } %>
 
-  <label>
-    <span>Birth Day</span>
-    <input type="number" min="1" max="31" name="birthDay" value="<%= member.birth_day || '' %>" required />
-  </label>
+<div class="form-section">
+  <h3>Personal Information</h3>
+  <div class="form-grid">
+    <label>
+      <span>Full Name</span>
+      <input type="text" name="fullName" value="<%= member.full_name || '' %>" required />
+    </label>
 
-  <label>
-    <span>Birth Month</span>
-    <select name="birthMonth" required>
-      <option value="">Select month</option>
-      <% months.forEach((month, index) => { %>
-        <option value="<%= index + 1 %>" <%= Number(member.birth_month) === index + 1 ? 'selected' : '' %>><%= month %></option>
-      <% }) %>
-    </select>
-  </label>
+    <label>
+      <span>Gender</span>
+      <select name="gender">
+        <option value="">Select gender</option>
+        <% genderOptions.forEach((option) => { %>
+          <option value="<%= option %>" <%= member.gender === option ? 'selected' : '' %>><%= option %></option>
+        <% }) %>
+      </select>
+    </label>
 
-  <label>
-    <span>Hostel</span>
-    <input type="text" name="hostel" value="<%= member.hostel || '' %>" required />
-  </label>
+    <label>
+      <span>Birth Day</span>
+      <input type="number" min="1" max="31" name="birthDay" value="<%= member.birth_day || '' %>" />
+    </label>
 
-  <label>
-    <span>Course of Study</span>
-    <select name="courseId" required>
-      <option value="">Select course</option>
-      <% courses.forEach((course) => { %>
-        <option value="<%= course.id %>" <%= Number(member.course_id) === Number(course.id) ? 'selected' : '' %>><%= course.name %></option>
-      <% }) %>
-    </select>
-  </label>
+    <label>
+      <span>Birth Month</span>
+      <select name="birthMonth">
+        <option value="">Select month</option>
+        <% months.forEach((month, index) => { %>
+          <option value="<%= index + 1 %>" <%= Number(member.birth_month) === index + 1 ? 'selected' : '' %>><%= month %></option>
+        <% }) %>
+      </select>
+    </label>
 
-  <label>
-    <span>Love Fellowship</span>
-    <select name="fellowshipId" id="fellowship-select" required>
-      <option value="">Select fellowship</option>
-      <% fellowships.forEach((fellowship) => { %>
-        <option value="<%= fellowship.id %>" <%= Number(member.fellowship_id) === Number(fellowship.id) ? 'selected' : '' %>><%= fellowship.name %></option>
-      <% }) %>
-    </select>
-  </label>
+    <label>
+      <span>Phone Number</span>
+      <input type="text" name="phone" value="<%= member.phone || '' %>" />
+    </label>
 
-  <label>
-    <span>Sub-ministry</span>
-    <select name="subMinistryId">
-      <option value="">None</option>
-      <% subMinistries.forEach((subMinistry) => { %>
-        <option value="<%= subMinistry.id %>" <%= Number(member.sub_ministry_id) === Number(subMinistry.id) ? 'selected' : '' %>><%= subMinistry.name %></option>
-      <% }) %>
-    </select>
-  </label>
+    <label>
+      <span>Email</span>
+      <input type="email" name="email" value="<%= member.email || '' %>" />
+    </label>
+  </div>
+</div>
 
-  <label>
-    <span>Role / Position</span>
-    <select name="roleId" id="role-select">
-      <option value="">Regular Member</option>
-    </select>
-  </label>
+<div class="form-section">
+  <h3>Academic Information</h3>
+  <div class="form-grid">
+    <label>
+      <span>Course of Study</span>
+      <input
+        type="text"
+        id="course-search"
+        list="course-options"
+        placeholder="Start typing to search courses (optional)..."
+        autocomplete="off"
+        value="<%= (courses.find((c) => Number(c.id) === Number(member.course_id)) || {}).name || '' %>"
+      />
+      <datalist id="course-options">
+        <% courses.forEach((course) => { %>
+          <option value="<%= course.name %>"></option>
+        <% }) %>
+      </datalist>
+      <input type="hidden" name="courseId" id="course-id-input" value="<%= member.course_id || '' %>" />
+    </label>
 
-  <label>
-    <span>Phone Number</span>
-    <input type="text" name="phone" value="<%= member.phone || '' %>" required />
-  </label>
+    <label>
+      <span>Level / Year of Study</span>
+      <select name="level">
+        <option value="">Select level</option>
+        <% studyLevels.forEach((level) => { %>
+          <option value="<%= level %>" <%= String(member.level) === String(level) ? 'selected' : '' %>><%= level %></option>
+        <% }) %>
+      </select>
+    </label>
 
-  <label>
-    <span>Email</span>
-    <input type="email" name="email" value="<%= member.email || '' %>" required />
-  </label>
+    <label>
+      <span>Hostel</span>
+      <input
+        type="text"
+        name="hostel"
+        list="hostel-options"
+        autocomplete="off"
+        value="<%= member.hostel || '' %>"
+      />
+      <datalist id="hostel-options">
+        <% (typeof hostelSuggestions !== 'undefined' ? hostelSuggestions : []).forEach((hostel) => { %>
+          <option value="<%= hostel %>"></option>
+        <% }) %>
+      </datalist>
+    </label>
 
-  <label>
-    <span>Level / Year of Study</span>
-    <select name="level" required>
-      <option value="">Select level</option>
-      <% studyLevels.forEach((level) => { %>
-        <option value="<%= level %>" <%= String(member.level) === String(level) ? 'selected' : '' %>><%= level %></option>
-      <% }) %>
-    </select>
-  </label>
+    <label>
+      <span>Room No.</span>
+      <input type="text" name="roomNo" value="<%= member.room_no || '' %>" />
+    </label>
 
-  <label>
-    <span>Status</span>
-    <select name="status" required>
-      <% memberStatuses.forEach((status) => { %>
-        <option value="<%= status %>" <%= member.status === status ? 'selected' : '' %>><%= status %></option>
-      <% }) %>
-    </select>
-  </label>
+    <% if (shouldShowStatusField) { %>
+      <label>
+        <span>Status</span>
+        <select name="status" required>
+          <% memberStatuses.forEach((status) => { %>
+            <option value="<%= status %>" <%= member.status === status ? 'selected' : '' %>><%= status %></option>
+          <% }) %>
+        </select>
+      </label>
+    <% } %>
+  </div>
+</div>
+
+<div class="form-section">
+  <h3>Fellowship & Role</h3>
+  <div class="form-grid">
+    <label>
+      <span>Love Fellowship</span>
+      <select name="fellowshipId" id="fellowship-select" required>
+        <option value="">Select fellowship</option>
+        <% fellowships.forEach((fellowship) => { %>
+          <option value="<%= fellowship.id %>" <%= Number(member.fellowship_id) === Number(fellowship.id) ? 'selected' : '' %>><%= fellowship.name %></option>
+        <% }) %>
+      </select>
+    </label>
+
+    <label>
+      <span>Sub-ministry</span>
+      <select name="subMinistryId">
+        <option value="">None</option>
+        <% subMinistries.forEach((subMinistry) => { %>
+          <option value="<%= subMinistry.id %>" <%= Number(member.sub_ministry_id) === Number(subMinistry.id) ? 'selected' : '' %>><%= subMinistry.name %></option>
+        <% }) %>
+      </select>
+    </label>
+
+    <label>
+      <span>Role / Position</span>
+      <select name="roleId" id="role-select">
+        <option value="">Regular Member</option>
+      </select>
+    </label>
+  </div>
 </div>
 
 <script>
   (() => {
+    // Course typeahead: keep the hidden courseId in sync with whatever the
+    // visible text input currently resolves to via the datalist.
+    const courseSearch = document.getElementById("course-search");
+    const courseIdInput = document.getElementById("course-id-input");
+    const courseCatalog = <%- JSON.stringify(courses) %>;
+    const courseByName = new Map(courseCatalog.map((course) => [course.name.toLowerCase(), course.id]));
+
+    function syncCourseId() {
+      const match = courseByName.get(courseSearch.value.trim().toLowerCase());
+      courseIdInput.value = match || "";
+      courseSearch.setCustomValidity(courseSearch.value && !match ? "Please choose a course from the list." : "");
+    }
+
+    courseSearch.addEventListener("input", syncCourseId);
+    courseSearch.addEventListener("blur", syncCourseId);
+    syncCourseId();
+
     const fellowshipSelect = document.getElementById("fellowship-select");
     const roleSelect = document.getElementById("role-select");
     const roleCatalog = <%- JSON.stringify(roleCatalogByFellowship) %>;

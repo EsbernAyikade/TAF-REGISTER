@@ -9,5 +9,31 @@
         </div>
       </div>
     </footer>
+
+    <script>
+      // Site-wide confirmation for destructive/high-stakes actions. Any form
+      // with a data-confirm attribute shows a native confirm() dialog with
+      // that message before submitting; cancelling stops the submission.
+      document.addEventListener("submit", (event) => {
+        const form = event.target.closest("form[data-confirm]");
+        if (form && !window.confirm(form.dataset.confirm)) {
+          event.preventDefault();
+        }
+      });
+
+      // Auto-dismiss flash banners after a few seconds, and allow manual
+      // dismissal via the close button rendered in the flash partial.
+      document.querySelectorAll(".flash").forEach((flash) => {
+        const dismiss = () => {
+          flash.classList.add("flash-hidden");
+          setTimeout(() => flash.remove(), 250);
+        };
+        const closeButton = flash.querySelector("[data-flash-dismiss]");
+        if (closeButton) {
+          closeButton.addEventListener("click", dismiss);
+        }
+        setTimeout(dismiss, 6000);
+      });
+    </script>
   </body>
 </html>

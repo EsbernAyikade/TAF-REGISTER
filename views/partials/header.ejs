@@ -1,14 +1,23 @@
 <header class="site-header">
   <div class="container topbar">
-    <a href="<%= currentUser ? '/dashboard' : '/login' %>" class="brand">
-      <img src="/images/ta-logo.jpg" alt="Teens Aloud Foundation logo" class="brand-logo" />
+    <a href="<%= currentUser ? '/dashboard' : '/login' %>" class="brand" aria-label="Teens Aloud Foundation home">
+      <img
+        src="/images/ta-logo.jpg"
+        alt="Teens Aloud Foundation logo"
+        class="brand-logo"
+        onerror="this.onerror=null;this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 58 58%22%3E%3Crect width=%2258%22 height=%2258%22 rx=%2214%22 fill=%22%230f5fd8%22/%3E%3Ctext x=%2229%22 y=%2238%22 font-family=%22Arial,sans-serif%22 font-size=%2224%22 font-weight=%22700%22 fill=%22white%22 text-anchor=%22middle%22%3ETA%3C/text%3E%3C/svg%3E'"
+      />
       <div>
         <strong>Teens Aloud Foundation</strong>
-        <span>Member Registration & Records</span>
+        <span>Member Records & Attendance</span>
       </div>
     </a>
 
-    <nav class="nav">
+    <button type="button" class="mobile-nav-toggle" aria-label="Toggle navigation" aria-expanded="false">
+      <span></span><span></span><span></span>
+    </button>
+
+    <nav class="nav" aria-label="Main navigation">
       <% if (currentUser) { %>
         <a href="/dashboard" class="nav-link <%= currentPath === '/dashboard' ? 'active' : '' %>">Dashboard</a>
         <a href="/members" class="nav-link <%= currentPath.startsWith('/members') || currentPath.startsWith('/exports') ? 'active' : '' %>">Members</a>
@@ -22,6 +31,13 @@
             <a href="/fellowships/<%= fellowship.slug %>" class="nav-link <%= currentPath === '/fellowships/' + fellowship.slug ? 'active' : '' %>"><%= fellowship.name.replace(' Love Fellowship', '') %></a>
           <% } %>
         <% }) %>
+        <div class="user-chip" aria-label="Current user profile">
+          <span class="user-avatar"><%= currentUser.full_name.charAt(0).toUpperCase() %></span>
+          <div>
+            <strong><%= currentUser.full_name %></strong>
+            <small><%= currentUser.access_role.replace('_', ' ') %></small>
+          </div>
+        </div>
         <form action="/logout" method="post" class="nav-logout">
           <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
           <button type="submit" class="button button-outline button-small">Logout</button>
@@ -32,3 +48,22 @@
     </nav>
   </div>
 </header>
+
+<script>
+  (() => {
+    const header = document.querySelector('.site-header');
+    const toggle = document.querySelector('.mobile-nav-toggle');
+    const nav = document.querySelector('.nav');
+    if (!header || !toggle || !nav) return;
+
+    toggle.addEventListener('click', () => {
+      const isOpen = header.classList.toggle('nav-open');
+      toggle.setAttribute('aria-expanded', String(isOpen));
+    });
+
+    nav.querySelectorAll('a').forEach((link) => link.addEventListener('click', () => {
+      header.classList.remove('nav-open');
+      toggle.setAttribute('aria-expanded', 'false');
+    }));
+  })();
+</script>

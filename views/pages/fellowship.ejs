@@ -3,6 +3,14 @@
 <%- include('../partials/flash') %>
 
 <main class="container page">
+  <nav class="page-breadcrumbs" aria-label="Breadcrumb">
+    <a href="/dashboard">Dashboard</a>
+    <span class="divider">/</span>
+    <a href="/members">Members</a>
+    <span class="divider">/</span>
+    <span><%= fellowship.name %></span>
+  </nav>
+
   <section class="section-heading">
     <div>
       <span class="eyebrow">Love Fellowship</span>
@@ -11,8 +19,11 @@
     </div>
     <div class="button-row">
       <a href="/members?fellowshipId=<%= fellowship.id %>" class="button button-outline">View Directory Slice</a>
+      <% if (currentUser.access_role === 'super_admin') { %>
+        <a href="/members/import" class="button button-outline">Import Register</a>
+      <% } %>
       <% if (canManage) { %>
-        <a href="/fellowships/<%= fellowship.slug %>/attendance" class="button">Mark Attendance</a>
+        <a href="/fellowships/<%= fellowship.slug %>/attendance" class="button button-accent">Mark Attendance</a>
       <% } %>
     </div>
   </section>
@@ -21,6 +32,9 @@
     <article class="stat-card"><span>Total Members</span><strong><%= stats.totalMembers %></strong></article>
     <article class="stat-card"><span>Male</span><strong><%= stats.maleMembers %></strong></article>
     <article class="stat-card"><span>Female</span><strong><%= stats.femaleMembers %></strong></article>
+    <% if (stats.unspecifiedGenderMembers > 0) { %>
+      <article class="stat-card"><span>Unspecified</span><strong><%= stats.unspecifiedGenderMembers %></strong></article>
+    <% } %>
     <article class="stat-card"><span>Attendance This Week</span><strong><%= attendanceHeadline ? attendanceHeadline.present_total : 0 %></strong></article>
   </section>
 
@@ -102,13 +116,23 @@
           </tr>
         </thead>
         <tbody>
+          <% if (members.length === 0) { %>
+            <tr>
+              <td colspan="5">
+                <div class="empty-state">
+                  <strong>No members yet</strong>
+                  <p class="muted">Approved members assigned to this Love Fellowship will show up here.</p>
+                </div>
+              </td>
+            </tr>
+          <% } %>
           <% members.forEach((member) => { %>
             <tr>
-              <td><a href="/members/<%= member.id %>"><%= member.full_name %></a></td>
-              <td><%= member.role_name || 'Regular Member' %></td>
-              <td><%= member.sub_ministry_name || 'None' %></td>
-              <td><%= member.course_name %></td>
-              <td><%= member.level %></td>
+              <td data-label="Name"><a href="/members/<%= member.id %>"><%= member.full_name %></a></td>
+              <td data-label="Role"><%= member.role_name || 'Regular Member' %></td>
+              <td data-label="Sub-ministry"><%= member.sub_ministry_name || 'None' %></td>
+              <td data-label="Course"><%= member.course_name %></td>
+              <td data-label="Level"><%= member.level %></td>
             </tr>
           <% }) %>
         </tbody>

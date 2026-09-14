@@ -3,6 +3,14 @@
 <%- include('../partials/flash') %>
 
 <main class="container page">
+  <nav class="page-breadcrumbs" aria-label="Breadcrumb">
+    <a href="/dashboard">Dashboard</a>
+    <span class="divider">/</span>
+    <a href="/fellowships/<%= fellowship.slug %>"><%= fellowship.name %></a>
+    <span class="divider">/</span>
+    <span>Attendance</span>
+  </nav>
+
   <section class="section-heading">
     <div>
       <span class="eyebrow">Attendance</span>
@@ -20,21 +28,37 @@
           <p><%= weekLabel %></p>
         </div>
       </div>
-      <form action="/fellowships/<%= fellowship.slug %>/attendance" method="post" class="stack">
+      <p class="muted">
+        Marking week-by-week works well for a quick Sunday check-in. Already have a filled-in register for a
+        whole month? <a href="/members/import">Bulk import it</a> instead of marking each week by hand.
+      </p>
+      <div class="attendance-toolbar">
+        <input
+          type="search"
+          id="attendance-search"
+          placeholder="Search members..."
+          aria-label="Search members to mark attendance"
+        />
+        <button type="button" class="button button-small" data-select-all>Select all</button>
+        <button type="button" class="button button-outline button-small" data-clear-all>Clear all</button>
+        <span class="attendance-counter" id="attendance-counter">0 of <%= members.length %> selected</span>
+      </div>
+      <form action="/fellowships/<%= fellowship.slug %>/attendance" method="post" class="stack" id="attendance-form">
         <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
         <label>
           <span>Week starting</span>
           <input type="date" name="weekStart" value="<%= weekStart %>" required />
         </label>
 
-        <div class="checklist">
+        <div class="checklist" id="attendance-checklist">
           <% if (members.length === 0) { %>
             <p class="muted">No active approved members are available to mark.</p>
           <% } %>
           <% members.forEach((member) => { %>
-            <label class="checkbox-row member-row">
+            <label class="checkbox-row member-row" data-member-name="<%= member.full_name.toLowerCase() %>">
               <input
                 type="checkbox"
+                class="attendance-checkbox"
                 name="presentMemberIds"
                 value="<%= member.id %>"
                 <%= markedLookup.get(member.id) ? 'checked' : '' %>
@@ -42,9 +66,10 @@
               <span><%= member.full_name %></span>
             </label>
           <% }) %>
+          <p class="muted" id="attendance-no-results" style="display: none;">No members match your search.</p>
         </div>
 
-        <button type="submit" class="button">Save Attendance</button>
+        <button type="submit" class="button button-accent">Save Attendance</button>
       </form>
     </article>
 
@@ -67,5 +92,55 @@
     </article>
   </section>
 </main>
+
+<script>
+  (function () {
+    const checkboxes = Array.from(document.querySelectorAll('.attendance-checkbox'));
+    const counter = document.getElementById('attendance-counter');
+    const total = checkboxes.length;
+    const updateCounter = () => {
+      const count = checkboxes.filter((box) => box.checked).length;
+      counter.textContent = `${count} of ${total} selected`;
+    };
+
+    const selectAll = document.querySelector('[data-select-all]');
+    const clearAll = document.querySelector('[data-clear-all]');
+
+    if (selectAll) {
+      selectAll.addEventListener('click', () => {
+        checkboxes.forEach((box) => { box.checked = true; });
+        updateCounter();
+      });
+    }
+
+    if (clearAll) {
+      clearAll.addEventListener('click', () => {
+        checkboxes.forEach((box) => { box.checked = false; });
+        updateCounter();
+      });
+    }
+
+    checkboxes.forEach((box) => box.addEventListener('change', updateCounter));
+    updateCounter();
+
+    const search = document.getElementById('attendance-search');
+    const rows = Array.from(document.querySelectorAll('.member-row'));
+    const noResults = document.getElementById('attendance-no-results');
+    if (search) {
+      search.addEventListener('input', () => {
+        const term = search.value.trim().toLowerCase();
+        let visibleCount = 0;
+        rows.forEach((row) => {
+          const matches = !term || row.dataset.memberName.includes(term);
+          row.style.display = matches ? '' : 'none';
+          if (matches) visibleCount += 1;
+        });
+        if (noResults) {
+          noResults.style.display = visibleCount === 0 ? '' : 'none';
+        }
+      });
+    }
+  })();
+</script>
 
 <%- include('../partials/footer') %>
