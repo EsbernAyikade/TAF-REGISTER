@@ -219,7 +219,12 @@ function requireManagerForFellowship(req, res, next) {
     .prepare("SELECT id FROM fellowships WHERE slug = ?")
     .get(req.params.slug);
   if (!fellowship) {
-    return res.status(404).render("pages/not-found", { pageTitle: "Not Found" });
+    return res.status(404).render("pages/not-found", {
+      pageTitle: "Not Found",
+      currentUser: req.currentUser || res.locals.currentUser || null,
+      currentPath: req.path,
+      csrfToken: res.locals.csrfToken || "",
+    });
   }
 
   req.fellowship = fellowship;
@@ -1271,7 +1276,12 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
 app.get("/members/:id", requireAuth, (req, res) => {
   const member = getMemberWithDetails(Number(req.params.id));
   if (!member) {
-    return res.status(404).render("pages/not-found", { pageTitle: "Member Not Found" });
+    return res.status(404).render("pages/not-found", {
+      pageTitle: "Member Not Found",
+      currentUser: req.currentUser || res.locals.currentUser || null,
+      currentPath: req.path,
+      csrfToken: res.locals.csrfToken || "",
+    });
   }
 
   const attendanceStats = db
@@ -1325,11 +1335,21 @@ app.get("/members/:id", requireAuth, (req, res) => {
 app.get("/members/:id/edit", requireAuth, (req, res) => {
   const member = getMemberWithDetails(Number(req.params.id));
   if (!member) {
-    return res.status(404).render("pages/not-found", { pageTitle: "Member Not Found" });
+    return res.status(404).render("pages/not-found", {
+      pageTitle: "Member Not Found",
+      currentUser: req.currentUser || res.locals.currentUser || null,
+      currentPath: req.path,
+      csrfToken: res.locals.csrfToken || "",
+    });
   }
 
   if (!canManageMember(req.currentUser, member)) {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
+    return res.status(403).render("pages/forbidden", {
+      pageTitle: "Access Denied",
+      currentUser: req.currentUser || res.locals.currentUser || null,
+      currentPath: req.path,
+      csrfToken: res.locals.csrfToken || "",
+    });
   }
 
   res.render("pages/edit-member", {
@@ -1341,11 +1361,21 @@ app.get("/members/:id/edit", requireAuth, (req, res) => {
 app.post("/members/:id/edit", requireAuth, (req, res) => {
   const existingMember = getMemberWithDetails(Number(req.params.id));
   if (!existingMember) {
-    return res.status(404).render("pages/not-found", { pageTitle: "Member Not Found" });
+    return res.status(404).render("pages/not-found", {
+      pageTitle: "Member Not Found",
+      currentUser: req.currentUser || res.locals.currentUser || null,
+      currentPath: req.path,
+      csrfToken: res.locals.csrfToken || "",
+    });
   }
 
   if (!canManageMember(req.currentUser, existingMember)) {
-    return res.status(403).render("pages/forbidden", { pageTitle: "Access Denied" });
+    return res.status(403).render("pages/forbidden", {
+      pageTitle: "Access Denied",
+      currentUser: req.currentUser || res.locals.currentUser || null,
+      currentPath: req.path,
+      csrfToken: res.locals.csrfToken || "",
+    });
   }
 
   const payload = parseMemberPayload(req.body);
@@ -1429,7 +1459,12 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
     .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
     .get(req.params.slug);
   if (!fellowship) {
-    return res.status(404).render("pages/not-found", { pageTitle: "Fellowship Not Found" });
+    return res.status(404).render("pages/not-found", {
+      pageTitle: "Fellowship Not Found",
+      currentUser: req.currentUser || res.locals.currentUser || null,
+      currentPath: req.path,
+      csrfToken: res.locals.csrfToken || "",
+    });
   }
 
   const members = db
@@ -1804,13 +1839,23 @@ app.get("/health", (_req, res) => {
 });
 
 app.use((req, res) => {
-  res.status(404).render("pages/not-found", { pageTitle: "Not Found" });
+  res.status(404).render("pages/not-found", {
+    pageTitle: "Not Found",
+    currentUser: req.currentUser || res.locals.currentUser || null,
+    currentPath: req.path,
+    csrfToken: res.locals.csrfToken || "",
+  });
 });
 
 app.use((error, req, res, _next) => {
   console.error(error);
   setFlash(req, "error", "Something went wrong while processing your request.");
-  res.status(500).render("pages/error", { pageTitle: "Server Error" });
+  res.status(500).render("pages/error", {
+    pageTitle: "Server Error",
+    currentUser: req.currentUser || res.locals.currentUser || null,
+    currentPath: req.path,
+    csrfToken: res.locals.csrfToken || "",
+  });
 });
 
 app.listen(PORT, HOST, () => {
