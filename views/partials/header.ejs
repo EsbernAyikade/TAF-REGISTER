@@ -25,6 +25,7 @@
         <a href="/dashboard" class="nav-link <%= currentPath === '/dashboard' ? 'active' : '' %>">Dashboard</a>
         <a href="/members" class="nav-link <%= ((currentPath === '/members' || currentPath === '/members/new' || (currentPath.startsWith('/members/') && !currentPath.startsWith('/members/import'))) || currentPath.startsWith('/exports')) ? 'active' : '' %>">Members</a>
         <a href="/fellowships" class="nav-link <%= currentPath === '/fellowships' || currentPath.startsWith('/fellowships/') ? 'active' : '' %>">Fellowships</a>
+        <a href="/leadership" class="nav-link <%= currentPath.startsWith('/leadership') ? 'active' : '' %>">Leadership</a>
         <a href="/members/import" class="nav-link <%= currentPath === '/members/import' ? 'active' : '' %>">Import</a>
         <a href="/settings" class="settings-button <%= currentPath === '/settings' ? 'active' : '' %>" aria-label="Open settings" title="Settings">
           <svg viewBox="0 0 24 24" aria-hidden="true">

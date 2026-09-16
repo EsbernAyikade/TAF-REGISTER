@@ -34,9 +34,36 @@ const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 3000);
 const SESSION_SECRET = process.env.SESSION_SECRET || (isProduction ? null : "dev-only-local-session-secret");
 const NEW_MEMBER_WINDOW_DAYS = Number(process.env.NEW_MEMBER_WINDOW_DAYS || 42);
+const ARCHIVED_STATUS = "Archived";
 
 if (isProduction && !SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production.");
+}
+
+function archiveMember(memberId, reason) {
+  db.prepare(
+    `
+      UPDATE members
+      SET archived_at = CURRENT_TIMESTAMP,
+          archived_reason = ?,
+          status = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  ).run(reason || null, ARCHIVED_STATUS, memberId);
+}
+
+function restoreMember(memberId) {
+  db.prepare(
+    `
+      UPDATE members
+      SET archived_at = NULL,
+          archived_reason = NULL,
+          status = CASE WHEN status = ? THEN 'Active' ELSE status END,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `
+  ).run(ARCHIVED_STATUS, memberId);
 }
 
 app.set("trust proxy", 1);
@@ -677,6 +704,10 @@ function buildMembersQuery(filters) {
     params.push(filters.status);
   }
 
+  if (!filters.includeArchived) {
+    conditions.push("members.archived_at IS NULL");
+  }
+
   if (filters.duplicateOnly) {
     conditions.push("members.duplicate_flag = 1");
   }
@@ -1124,7 +1155,7 @@ app.get("/dashboard", requireAuth, (req, res) => {
   const statsParams = [];
 
   const totalMembers = db
-    .prepare(`SELECT COUNT(*) AS count FROM members ${memberVisibilityCondition}`)
+    .prepare(`SELECT COUNT(*) AS count FROM members ${memberVisibilityCondition} AND archived_at IS NULL`)
     .get(...statsParams).count;
 
   const genderStats = db
@@ -1132,7 +1163,7 @@ app.get("/dashboard", requireAuth, (req, res) => {
       `
         SELECT COALESCE(NULLIF(gender, ''), 'Unspecified') AS gender, COUNT(*) AS count
         FROM members
-        ${memberVisibilityCondition}
+        ${memberVisibilityCondition} AND archived_at IS NULL
         GROUP BY COALESCE(NULLIF(gender, ''), 'Unspecified')
         ORDER BY count DESC, gender
       `
@@ -1146,7 +1177,7 @@ app.get("/dashboard", requireAuth, (req, res) => {
           SELECT member_sub_ministries.sub_ministry_id, COUNT(*) AS count
           FROM member_sub_ministries
           JOIN members ON members.id = member_sub_ministries.member_id
-          ${memberVisibilityCondition.replace('WHERE 1 = 1', 'WHERE 1 = 1')}
+          ${memberVisibilityCondition.replace('WHERE 1 = 1', 'WHERE 1 = 1')} AND members.archived_at IS NULL
           GROUP BY member_sub_ministries.sub_ministry_id
 
           UNION ALL
@@ -1154,6 +1185,7 @@ app.get("/dashboard", requireAuth, (req, res) => {
           SELECT members.sub_ministry_id AS sub_ministry_id, COUNT(*) AS count
           FROM members
           WHERE members.sub_ministry_id IS NOT NULL
+            AND members.archived_at IS NULL
             AND NOT EXISTS (
               SELECT 1 FROM member_sub_ministries WHERE member_sub_ministries.member_id = members.id
             )
@@ -1175,6 +1207,7 @@ app.get("/dashboard", requireAuth, (req, res) => {
         FROM fellowships
         LEFT JOIN members
           ON members.fellowship_id = fellowships.id
+         AND members.archived_at IS NULL
         WHERE 1 = 1
         GROUP BY fellowships.id, fellowships.name, fellowships.slug
         ORDER BY fellowships.name
@@ -1235,6 +1268,7 @@ app.get("/members", requireAuth, (req, res) => {
     hostel: String(req.query.hostel || "").trim(),
     status: String(req.query.status || "").trim(),
     duplicateOnly: req.query.duplicateOnly === "1",
+    includeArchived: req.query.includeArchived === "1",
   };
 
   const { sql, params } = buildMembersQuery(filters);
@@ -1255,6 +1289,7 @@ app.get("/members", requireAuth, (req, res) => {
       hostel: filters.hostel,
       status: filters.status,
       duplicateOnly: filters.duplicateOnly ? "1" : "",
+      includeArchived: filters.includeArchived ? "1" : "",
     }),
     csrfToken: res.locals.csrfToken,
   });
@@ -2197,6 +2232,32 @@ app.post("/members/:id/transfer", requireAuth, (req, res) => {
       currentPath: req.path,
       csrfToken: res.locals.csrfToken || "",
     });
+
+    app.post("/members/:id/archive", requireAuth, (req, res) => {
+      const member = getMemberWithDetails(Number(req.params.id));
+      if (!member) {
+        setFlash(req, "error", "Member not found.");
+        return res.redirect("/members");
+      }
+
+      archiveMember(member.id, String(req.body.reason || "").trim());
+      logAudit(null, "member_archived", "member", member.id, member.full_name);
+      setFlash(req, "success", `${member.full_name} was archived.`);
+      return res.redirect("/members");
+    });
+
+    app.post("/members/:id/restore", requireAuth, (req, res) => {
+      const member = getMemberWithDetails(Number(req.params.id));
+      if (!member) {
+        setFlash(req, "error", "Member not found.");
+        return res.redirect("/members?includeArchived=1");
+      }
+
+      restoreMember(member.id);
+      logAudit(null, "member_restored", "member", member.id, member.full_name);
+      setFlash(req, "success", `${member.full_name} was restored.`);
+      return res.redirect("/members?includeArchived=1");
+    });
   }
 
   const toFellowshipId = Number(req.body.toFellowshipId);
@@ -2324,7 +2385,7 @@ app.get("/fellowships", requireAuth, (_req, res) => {
       ...fellowship,
       attendance: attendanceByFellowship.get(Number(fellowship.id)) || null,
       memberCount: db
-        .prepare("SELECT COUNT(*) AS count FROM members WHERE fellowship_id = ?")
+        .prepare("SELECT COUNT(*) AS count FROM members WHERE fellowship_id = ? AND archived_at IS NULL")
         .get(fellowship.id).count,
     }));
 
@@ -2345,6 +2406,32 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
       currentPath: req.path,
       csrfToken: res.locals.csrfToken || "",
     });
+
+    app.get("/leadership", requireAuth, (req, res) => {
+      const search = String(req.query.search || "").trim().toLowerCase();
+      const leaders = db
+        .prepare(
+          `
+            SELECT members.id, members.full_name, roles.display_name AS role_name, roles.role_type,
+                   COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name,
+                   fellowships.slug AS fellowship_slug
+            FROM members
+            JOIN roles ON roles.id = members.role_id
+            LEFT JOIN fellowships ON fellowships.id = members.fellowship_id
+            WHERE members.archived_at IS NULL
+              AND roles.role_type IN ('Executive','Rep','Director')
+            ORDER BY fellowship_name, roles.role_type, role_name, members.full_name
+          `
+        )
+        .all()
+        .filter((row) => !search || row.full_name.toLowerCase().includes(search) || row.role_name.toLowerCase().includes(search));
+
+      res.render("pages/leadership", {
+        pageTitle: "Leadership Directory",
+        leaders,
+        search,
+      });
+    });
   }
 
   const members = db
@@ -2357,6 +2444,7 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
         LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
         LEFT JOIN roles ON roles.id = members.role_id
         WHERE members.fellowship_id = ?
+          AND members.archived_at IS NULL
         ORDER BY
           CASE roles.role_type
             WHEN 'Executive' THEN 0
@@ -2383,6 +2471,7 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
         JOIN sub_ministries ON sub_ministries.id = member_sub_ministries.sub_ministry_id
         JOIN members ON members.id = member_sub_ministries.member_id
         WHERE members.fellowship_id = ?
+          AND members.archived_at IS NULL
         GROUP BY sub_ministries.id, sub_ministries.name
 
         UNION ALL
@@ -2391,6 +2480,7 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
         FROM members
         JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
         WHERE members.fellowship_id = ?
+          AND members.archived_at IS NULL
           AND members.sub_ministry_id IS NOT NULL
           AND NOT EXISTS (
             SELECT 1 FROM member_sub_ministries WHERE member_sub_ministries.member_id = members.id
@@ -2518,6 +2608,11 @@ app.get(
       .get(req.params.slug);
     const weekStart = getWeekStart(String(req.query.weekStart || ""));
     const weekEnd = getWeekEnd(weekStart);
+    const terms = db.prepare("SELECT id, label, start_date, end_date FROM terms ORDER BY start_date DESC").all();
+    const selectedTermId = req.query.termId ? Number(req.query.termId) : null;
+    const selectedTerm = selectedTermId
+      ? terms.find((term) => Number(term.id) === selectedTermId) || null
+      : null;
 
     const members = db
       .prepare(
@@ -2555,9 +2650,21 @@ app.get(
         });
     }
 
-    const history = db
-      .prepare(
+    const historyQuery = selectedTerm
+      ? `
+          SELECT attendance_sessions.week_start, attendance_sessions.week_end,
+                 COALESCE(SUM(CASE WHEN attendance_records.present = 1 THEN 1 ELSE 0 END), 0) AS present_total
+          FROM attendance_sessions
+          LEFT JOIN attendance_records
+            ON attendance_records.attendance_session_id = attendance_sessions.id
+          WHERE attendance_sessions.fellowship_id = ?
+            AND attendance_sessions.week_start >= ?
+            AND attendance_sessions.week_start <= ?
+          GROUP BY attendance_sessions.id, attendance_sessions.week_start, attendance_sessions.week_end
+          ORDER BY attendance_sessions.week_start DESC
+          LIMIT 12
         `
+      : `
           SELECT attendance_sessions.week_start, attendance_sessions.week_end,
                  COALESCE(SUM(CASE WHEN attendance_records.present = 1 THEN 1 ELSE 0 END), 0) AS present_total
           FROM attendance_sessions
@@ -2567,9 +2674,11 @@ app.get(
           GROUP BY attendance_sessions.id, attendance_sessions.week_start, attendance_sessions.week_end
           ORDER BY attendance_sessions.week_start DESC
           LIMIT 12
-        `
-      )
-      .all(fellowship.id)
+        `;
+
+    const history = db
+      .prepare(historyQuery)
+      .all(...(selectedTerm ? [fellowship.id, selectedTerm.start_date, selectedTerm.end_date] : [fellowship.id]))
       .map((row) => ({
         ...row,
         label: getWeekLabel(row.week_start, row.week_end),
@@ -2587,6 +2696,8 @@ app.get(
       weekEnd,
       weekLabel: getWeekLabel(weekStart, weekEnd),
       history,
+      terms,
+      selectedTermId,
     });
   }
 );
@@ -2608,6 +2719,34 @@ app.post(
         ? [Number(req.body.presentMemberIds)]
         : []
     );
+
+    app.get("/terms", requireAuth, (req, res) => {
+      const terms = db
+        .prepare("SELECT id, label, start_date, end_date, created_at FROM terms ORDER BY start_date DESC")
+        .all();
+      res.render("pages/terms", {
+        pageTitle: "Terms",
+        terms,
+        csrfToken: res.locals.csrfToken,
+      });
+    });
+
+    app.post("/terms", requireAuth, (req, res) => {
+      const label = String(req.body.label || "").trim();
+      const startDate = String(req.body.startDate || "").trim();
+      const endDate = String(req.body.endDate || "").trim();
+      if (!label || !startDate || !endDate || endDate < startDate) {
+        setFlash(req, "error", "Enter a valid term label, start date, and end date.");
+        return res.redirect("/terms");
+      }
+
+      db.prepare(
+        "INSERT INTO terms (label, start_date, end_date) VALUES (?, ?, ?)"
+      ).run(label, startDate, endDate);
+      logAudit(null, "term_created", "term", null, label);
+      setFlash(req, "success", `Term ${label} added.`);
+      return res.redirect("/terms");
+    });
 
     const activeMembers = db
       .prepare(
@@ -2683,6 +2822,7 @@ app.get("/exports/members.csv", requireAuth, (req, res) => {
     hostel: String(req.query.hostel || "").trim(),
     status: String(req.query.status || "").trim(),
     duplicateOnly: req.query.duplicateOnly === "1",
+    includeArchived: req.query.includeArchived === "1",
   };
 
   const { sql, params } = buildMembersQuery(filters);
@@ -2741,6 +2881,7 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
       hostel: String(req.query.hostel || "").trim(),
       status: String(req.query.status || "").trim(),
       duplicateOnly: req.query.duplicateOnly === "1",
+      includeArchived: req.query.includeArchived === "1",
     };
 
     const { sql, params } = buildMembersQuery(filters);
@@ -2771,6 +2912,128 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
         birthday: formatBirthdayForExport(member.birth_day, member.birth_month),
         sub_ministry_name: member.sub_ministry_name || "None",
         role_name: member.role_name || "Regular Member",
+      });
+
+      app.get("/fellowships/:slug/register-print", requireAuth, requireManagerForFellowship, (req, res) => {
+        const fellowship = db
+          .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
+          .get(req.params.slug);
+        const members = db
+          .prepare(
+            `
+              SELECT full_name, hostel, room_no
+              FROM members
+              WHERE fellowship_id = ? AND archived_at IS NULL
+              ORDER BY full_name
+            `
+          )
+          .all(fellowship.id);
+        const weekColumns = Array.from({ length: 8 }, (_, index) => `Week ${index + 1}`);
+        res.render("pages/register-print", {
+          pageTitle: `${fellowship.name} Register`,
+          fellowship,
+          members,
+          weekColumns,
+        });
+      });
+
+      app.post("/courses/:id/duration", requireAuth, (req, res) => {
+        const years = Number(req.body.durationYears);
+        if (!Number.isFinite(years) || years < 1 || years > 8) {
+          setFlash(req, "error", "Course duration must be between 1 and 8 years.");
+          return res.redirect("/settings");
+        }
+        db.prepare("UPDATE courses SET duration_years = ? WHERE id = ?").run(years, Number(req.params.id));
+        setFlash(req, "success", "Course duration updated.");
+        return res.redirect("/settings");
+      });
+
+      app.get("/members/promotions/preview", requireAuth, (req, res) => {
+        const members = db
+          .prepare(
+            `
+              SELECT members.id, members.full_name, members.level, courses.id AS course_id,
+                     courses.name AS course_name, courses.duration_years
+              FROM members
+              LEFT JOIN courses ON courses.id = members.course_id
+              WHERE members.archived_at IS NULL
+              ORDER BY members.full_name
+            `
+          )
+          .all();
+
+        const promotable = [];
+        const flagged = [];
+        members.forEach((member) => {
+          const currentLevel = Number(member.level);
+          if (!Number.isFinite(currentLevel) || currentLevel < 100) {
+            flagged.push({ ...member, reason: "Missing or invalid current level" });
+            return;
+          }
+          if (!member.duration_years) {
+            flagged.push({ ...member, reason: "Course duration not set" });
+            return;
+          }
+          const terminalLevel = Number(member.duration_years) * 100;
+          if (currentLevel >= terminalLevel) {
+            flagged.push({ ...member, reason: `At terminal level ${terminalLevel}` });
+            return;
+          }
+          promotable.push({ ...member, nextLevel: currentLevel + 100 });
+        });
+
+        res.render("pages/promotion-preview", {
+          pageTitle: "Annual Level Promotion Preview",
+          promotable,
+          flagged,
+          csrfToken: res.locals.csrfToken,
+        });
+      });
+
+      app.post("/members/promotions/apply", requireAuth, (req, res) => {
+        const promotions = db
+          .prepare(
+            `
+              SELECT members.id, members.level, courses.duration_years
+              FROM members
+              LEFT JOIN courses ON courses.id = members.course_id
+              WHERE members.archived_at IS NULL
+            `
+          )
+          .all();
+
+        const update = db.prepare("UPDATE members SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+        let promotedCount = 0;
+        db.transaction(() => {
+          promotions.forEach((member) => {
+            const level = Number(member.level);
+            if (!Number.isFinite(level) || !member.duration_years) {
+              return;
+            }
+            const terminal = Number(member.duration_years) * 100;
+            if (level < terminal) {
+              update.run(level + 100, member.id);
+              promotedCount += 1;
+            }
+          });
+        })();
+
+        logAudit(null, "annual_promotion_applied", "member", null, `promoted=${promotedCount}`);
+        setFlash(req, "success", `Annual promotion applied to ${promotedCount} member(s).`);
+        return res.redirect("/members/promotions/preview");
+      });
+
+      app.get("/settings/backup/download", requireAuth, (req, res) => {
+        const now = new Date().toISOString().replace(/[:.]/g, "-");
+        const backupDir = path.join(__dirname, "..", "db-backups");
+        if (!fs.existsSync(backupDir)) {
+          fs.mkdirSync(backupDir, { recursive: true });
+        }
+        const backupPath = path.join(backupDir, `manual-backup-${now}.db`);
+        db.pragma("wal_checkpoint(FULL)");
+        fs.copyFileSync(path.resolve(process.env.DATABASE_PATH || "./data/teens-aloud.db"), backupPath);
+        logAudit(null, "backup_downloaded", "backup", null, backupPath);
+        return res.download(backupPath, `teens-aloud-backup-${now}.db`);
       });
     });
 

@@ -1,0 +1,37 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+<main class="container page">
+  <section class="section-heading">
+    <div>
+      <span class="eyebrow">Who’s Who</span>
+      <h1>Leadership Directory</h1>
+      <p>Executives, reps, and directors across all fellowships.</p>
+    </div>
+  </section>
+  <section class="card">
+    <form method="get" action="/leadership" class="filter-grid">
+      <label><span>Search</span><input type="text" name="search" value="<%= search %>" placeholder="Name or role" /></label>
+      <div class="form-actions"><button class="button" type="submit">Search</button></div>
+    </form>
+  </section>
+  <section class="card">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Role</th><th>Tier</th><th>Fellowship</th></tr></thead>
+        <tbody>
+          <% if (!leaders.length) { %><tr><td colspan="4">No leaders found.</td></tr><% } %>
+          <% leaders.forEach((leader) => { %>
+            <tr>
+              <td><a href="/members/<%= leader.id %>"><%= leader.full_name %></a></td>
+              <td><%= leader.role_name %></td>
+              <td><%= leader.role_type %></td>
+              <td><%= leader.fellowship_slug ? '' : '' %><%= leader.fellowship_name %></td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<%- include('../partials/footer') %>

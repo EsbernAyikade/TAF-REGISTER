@@ -131,6 +131,10 @@
         <input type="checkbox" name="duplicateOnly" value="1" <%= filters.duplicateOnly ? 'checked' : '' %> />
         <span>Possible duplicates only</span>
       </label>
+      <label class="checkbox-row">
+        <input type="checkbox" name="includeArchived" value="1" <%= filters.includeArchived ? 'checked' : '' %> />
+        <span>Show archived members</span>
+      </label>
 
       <div class="form-actions">
         <button type="submit" class="button">Apply Filters</button>
@@ -230,6 +234,17 @@
                   <a href="/members/<%= member.id %>" class="button button-small button-outline">View</a>
                   <% if (isManager) { %>
                     <a href="/members/<%= member.id %>/edit" class="button button-small">Edit</a>
+                    <% if (!member.archived_at) { %>
+                      <form action="/members/<%= member.id %>/archive" method="post">
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+                        <button class="button button-small button-outline" type="submit">Archive</button>
+                      </form>
+                    <% } else { %>
+                      <form action="/members/<%= member.id %>/restore" method="post">
+                        <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+                        <button class="button button-small" type="submit">Restore</button>
+                      </form>
+                    <% } %>
                   <% } %>
                 </div>
               </td>

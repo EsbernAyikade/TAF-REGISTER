@@ -1,0 +1,22 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+<main class="container page">
+  <section class="section-heading"><div><span class="eyebrow">Structure</span><h1>Terms</h1></div></section>
+  <section class="card">
+    <form action="/terms" method="post" class="filter-grid">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+      <label><span>Label</span><input type="text" name="label" required /></label>
+      <label><span>Start</span><input type="date" name="startDate" required /></label>
+      <label><span>End</span><input type="date" name="endDate" required /></label>
+      <div class="form-actions"><button class="button" type="submit">Add term</button></div>
+    </form>
+  </section>
+  <section class="card">
+    <div class="table-wrap"><table><thead><tr><th>Label</th><th>Start</th><th>End</th></tr></thead><tbody>
+      <% if (!terms.length) { %><tr><td colspan="3">No terms yet.</td></tr><% } %>
+      <% terms.forEach((term) => { %><tr><td><%= term.label %></td><td><%= term.start_date %></td><td><%= term.end_date %></td></tr><% }) %>
+    </tbody></table></div>
+  </section>
+</main>
+<%- include('../partials/footer') %>

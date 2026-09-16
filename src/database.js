@@ -83,7 +83,8 @@ function initializeDatabase() {
 
     CREATE TABLE IF NOT EXISTS courses (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL UNIQUE
+      name TEXT NOT NULL UNIQUE,
+      duration_years INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS roles (
@@ -200,11 +201,30 @@ function initializeDatabase() {
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    CREATE TABLE IF NOT EXISTS terms (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      label TEXT NOT NULL UNIQUE,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   const userColumns = db.prepare("PRAGMA table_info(users)").all();
   if (!userColumns.some((column) => column.name === "must_change_password")) {
     db.exec("ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 1");
+  }
+  const courseColumns = db.prepare("PRAGMA table_info(courses)").all();
+  if (!courseColumns.some((column) => column.name === "duration_years")) {
+    db.exec("ALTER TABLE courses ADD COLUMN duration_years INTEGER");
+  }
+  const memberColumns = db.prepare("PRAGMA table_info(members)").all();
+  if (!memberColumns.some((column) => column.name === "archived_at")) {
+    db.exec("ALTER TABLE members ADD COLUMN archived_at TEXT");
+  }
+  if (!memberColumns.some((column) => column.name === "archived_reason")) {
+    db.exec("ALTER TABLE members ADD COLUMN archived_reason TEXT");
   }
 
   migrateMembersTableToRelaxedSchema();

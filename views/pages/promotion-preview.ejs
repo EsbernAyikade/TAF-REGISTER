@@ -1,0 +1,25 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+<main class="container page">
+  <section class="section-heading"><div><span class="eyebrow">Annual Action</span><h1>Promotion Preview</h1></div></section>
+  <section class="card">
+    <h2>Will Promote</h2>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Course</th><th>Current</th><th>Next</th></tr></thead><tbody>
+      <% if (!promotable.length) { %><tr><td colspan="4">None.</td></tr><% } %>
+      <% promotable.forEach((m)=>{ %><tr><td><%= m.full_name %></td><td><%= m.course_name || '—' %></td><td><%= m.level %></td><td><%= m.nextLevel %></td></tr><% }) %>
+    </tbody></table></div>
+  </section>
+  <section class="card">
+    <h2>Flagged for Review</h2>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Course</th><th>Level</th><th>Reason</th></tr></thead><tbody>
+      <% if (!flagged.length) { %><tr><td colspan="4">None.</td></tr><% } %>
+      <% flagged.forEach((m)=>{ %><tr><td><%= m.full_name %></td><td><%= m.course_name || '—' %></td><td><%= m.level || '—' %></td><td><%= m.reason %></td></tr><% }) %>
+    </tbody></table></div>
+    <form method="post" action="/members/promotions/apply">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+      <button type="submit" class="button">Apply Promotions</button>
+    </form>
+  </section>
+</main>
+<%- include('../partials/footer') %>

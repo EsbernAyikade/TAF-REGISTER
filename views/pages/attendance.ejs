@@ -75,6 +75,18 @@
 
     <article class="card">
       <h2>Attendance History</h2>
+      <form method="get" class="filter-grid">
+        <input type="hidden" name="weekStart" value="<%= weekStart %>" />
+        <label>
+          <span>Term</span>
+          <select name="termId" onchange="this.form.submit()">
+            <option value="">All terms</option>
+            <% (terms || []).forEach((term) => { %>
+              <option value="<%= term.id %>" <%= Number(selectedTermId) === Number(term.id) ? 'selected' : '' %>><%= term.label %></option>
+            <% }) %>
+          </select>
+        </label>
+      </form>
       <div class="trend-list">
         <% if (history.length === 0) { %><p class="muted">No attendance history yet.</p><% } %>
         <% history.forEach((entry) => { %>
