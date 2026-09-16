@@ -1,0 +1,128 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page narrow-page">
+  <section class="card settings-card">
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">Preferences</span>
+        <h1>Settings</h1>
+      </div>
+    </div>
+
+    <div class="settings-grid">
+      <div class="setting-card">
+        <div class="setting-card-header">
+          <div>
+            <span class="eyebrow">Security</span>
+            <h2>Access</h2>
+          </div>
+        </div>
+        <p>Keep the shared app password secure and update it whenever needed.</p>
+        <a href="/account/change-password" class="button button-accent">Change access password</a>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-card-header">
+          <div>
+            <span class="eyebrow">Appearance</span>
+            <h2>Theme</h2>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div>
+            <strong>Dark mode</strong>
+            <small>Switch the interface to a darker theme for evening use.</small>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" data-setting-toggle="darkMode" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <div>
+            <strong>Compact layout</strong>
+            <small>Use tighter spacing to fit more rows on screen.</small>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" data-setting-toggle="compactMode" />
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-card-header">
+          <div>
+            <span class="eyebrow">Workflow</span>
+            <h2>Quick actions</h2>
+          </div>
+        </div>
+        <div class="quick-links">
+          <a href="/members" class="text-link">Open member directory</a>
+          <a href="/members/new" class="text-link">Add a member</a>
+          <a href="/fellowships" class="text-link">View fellowships</a>
+          <a href="/members/import" class="text-link">Import attendance register</a>
+        </div>
+      </div>
+
+      <div class="setting-card">
+        <div class="setting-card-header">
+          <div>
+            <span class="eyebrow">Session</span>
+            <h2>Account</h2>
+          </div>
+        </div>
+        <div class="quick-links">
+          <button type="button" class="text-button" id="reset-settings">Reset local settings</button>
+          <form action="/logout" method="post" class="inline-form">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+            <button type="submit" class="text-button">Log out</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+  (() => {
+    const applyThemePreferences = () => {
+      const darkMode = localStorage.getItem('taf-dark-mode') === 'true';
+      const compactMode = localStorage.getItem('taf-compact-mode') === 'true';
+
+      document.body.classList.toggle('theme-dark', darkMode);
+      document.body.classList.toggle('density-compact', compactMode);
+
+      const darkToggle = document.querySelector('[data-setting-toggle="darkMode"]');
+      const compactToggle = document.querySelector('[data-setting-toggle="compactMode"]');
+
+      if (darkToggle) darkToggle.checked = darkMode;
+      if (compactToggle) compactToggle.checked = compactMode;
+    };
+
+    const updatePreference = (key, value) => {
+      localStorage.setItem(key, String(value));
+      applyThemePreferences();
+    };
+
+    document.getElementById('reset-settings')?.addEventListener('click', () => {
+      localStorage.removeItem('taf-dark-mode');
+      localStorage.removeItem('taf-compact-mode');
+      applyThemePreferences();
+    });
+
+    applyThemePreferences();
+
+    document.querySelectorAll('[data-setting-toggle]').forEach((toggle) => {
+      toggle.addEventListener('change', (event) => {
+        const target = event.target;
+        const key = target.dataset.settingToggle === 'darkMode' ? 'taf-dark-mode' : 'taf-compact-mode';
+        updatePreference(key, target.checked);
+      });
+    });
+  })();
+</script>
+
+<%- include('../partials/footer') %>

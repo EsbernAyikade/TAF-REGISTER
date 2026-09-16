@@ -132,15 +132,19 @@
       </select>
     </label>
 
-    <label>
-      <span>Sub-ministry</span>
-      <select name="subMinistryId">
-        <option value="">None</option>
+    <div>
+      <span>Sub-ministries</span>
+      <div class="checkbox-grid">
+        <% const selectedSubMinistryNames = typeof member !== 'undefined' && member && member.sub_ministry_name ? String(member.sub_ministry_name).split(',').map((name) => name.trim()) : []; %>
         <% subMinistries.forEach((subMinistry) => { %>
-          <option value="<%= subMinistry.id %>" <%= Number(member.sub_ministry_id) === Number(subMinistry.id) ? 'selected' : '' %>><%= subMinistry.name %></option>
+          <% const checked = selectedSubMinistryNames.includes(subMinistry.name) || Number(member.sub_ministry_id) === Number(subMinistry.id); %>
+          <label class="inline-check">
+            <input type="checkbox" name="subMinistryIds" value="<%= subMinistry.id %>" <%= checked ? 'checked' : '' %> />
+            <span><%= subMinistry.name %></span>
+          </label>
         <% }) %>
-      </select>
-    </label>
+      </div>
+    </div>
 
     <label>
       <span>Role / Position</span>

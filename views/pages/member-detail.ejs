@@ -44,6 +44,10 @@
       <h2>Attendance Snapshot</h2>
       <div class="stats-grid single-column">
         <article class="stat-card">
+          <span>Attendance Rate</span>
+          <strong><%= attendanceStats.attendance_rate || attendanceStats.rate %>%</strong>
+        </article>
+        <article class="stat-card">
           <span>Weeks Attended</span>
           <strong><%= attendanceStats.attended_weeks %></strong>
         </article>
@@ -51,23 +55,61 @@
           <span>Weeks Missed</span>
           <strong><%= attendanceStats.missed_weeks %></strong>
         </article>
-        <article class="stat-card">
-          <span>Attendance Rate</span>
-          <strong><%= attendanceStats.rate %>%</strong>
-        </article>
       </div>
+
+      <% if (attendanceHistory.length > 0) { %>
+        <div class="attendance-insights">
+          <article class="mini-stat">
+            <span>Longest streak</span>
+            <strong><%= attendanceStats.longest_attendance_streak || 0 %> W</strong>
+          </article>
+          <article class="mini-stat">
+            <span>Longest absence</span>
+            <strong><%= attendanceStats.longest_absence_streak || 0 %> W</strong>
+          </article>
+          <article class="mini-stat">
+            <span>First week</span>
+            <strong><%= attendanceStats.first_week ? weekLabel(attendanceStats.first_week, new Date(new Date(attendanceStats.first_week + 'T00:00:00Z').getTime() + 6*86400000).toISOString().slice(0,10)) : '—' %></strong>
+          </article>
+          <article class="mini-stat">
+            <span>Most recent</span>
+            <strong><%= attendanceStats.most_recent_week ? weekLabel(attendanceStats.most_recent_week, new Date(new Date(attendanceStats.most_recent_week + 'T00:00:00Z').getTime() + 6*86400000).toISOString().slice(0,10)) : '—' %></strong>
+          </article>
+        </div>
+
+        <div class="attendance-months">
+          <% attendanceGroups.forEach((group) => { %>
+            <div class="month-group">
+              <div class="month-group-header">
+                <h3><%= group.label %></h3>
+                <span><%= group.entries.filter((entry) => entry.present === 1).length %> present</span>
+              </div>
+              <div class="attendance-grid">
+                <% group.entries.forEach((entry) => { %>
+                  <span
+                    class="attendance-cell <%= entry.present === 1 ? 'present' : entry.present === 0 ? 'absent' : 'neutral' %>"
+                    title="<%= weekLabel(entry.week_start, entry.week_end) %> — <%= entry.present === 1 ? 'Present' : entry.present === 0 ? 'Absent' : 'No session' %>"
+                  ></span>
+                <% }) %>
+              </div>
+            </div>
+          <% }) %>
+        </div>
+      <% } else { %>
+        <p class="muted">No attendance has been recorded for this fellowship yet.</p>
+      <% } %>
+
       <div class="list-stack">
-        <% if (attendanceHistory.length === 0) { %>
-          <p class="muted">No attendance has been recorded for this fellowship yet.</p>
+        <% if (attendanceHistory.length > 0) { %>
+          <% attendanceHistory.forEach((entry) => { %>
+            <div class="list-item">
+              <span><%= weekLabel(entry.week_start, entry.week_end) %></span>
+              <span class="badge badge-<%= entry.present === 1 ? 'success' : entry.present === 0 ? 'danger' : 'neutral' %>">
+                <%= entry.present === 1 ? 'Present' : entry.present === 0 ? 'Absent / Not marked' : 'No session' %>
+              </span>
+            </div>
+          <% }) %>
         <% } %>
-        <% attendanceHistory.forEach((entry) => { %>
-          <div class="list-item">
-            <span><%= weekLabel(entry.week_start, entry.week_end) %></span>
-            <span class="badge badge-<%= entry.present ? 'success' : 'danger' %>">
-              <%= entry.present ? 'Present' : 'Absent / Not marked' %>
-            </span>
-          </div>
-        <% }) %>
       </div>
     </article>
   </section>

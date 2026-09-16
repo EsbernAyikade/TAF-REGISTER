@@ -3,17 +3,31 @@
 <%- include('../partials/flash') %>
 
 <main class="container page">
-  <section class="section-heading">
-    <div>
+  <section class="hero-panel">
+    <div class="hero-copy">
       <span class="eyebrow">Dashboard</span>
-      <h1>TAF Register</h1>
-      <p>See members, take attendance, and keep fellowship records up to date.</p>
+      <h1>Keep the fellowship record book in motion.</h1>
+      <p>See coverage, birthdays, and weekly attendance at a glance so the next service or follow-up starts with the right information.</p>
     </div>
-    <div class="button-row">
-      <a href="/members" class="button">Members</a>
+    <div class="hero-actions">
+      <a href="/members" class="button button-light">Members</a>
       <a href="/fellowships" class="button button-outline">Fellowships</a>
       <a href="/members/import" class="button button-outline">Import Register</a>
       <a href="/exports/members.xlsx" class="button button-outline">Export Excel</a>
+    </div>
+    <div class="hero-metrics">
+      <div class="metric-pill">
+        <strong><%= totalMembers %></strong>
+        <span>Total Members</span>
+      </div>
+      <div class="metric-pill">
+        <strong><%= birthdaysThisWeek.length %></strong>
+        <span>Birthdays</span>
+      </div>
+      <div class="metric-pill">
+        <strong><%= totalAttendanceThisWeek %></strong>
+        <span>Present</span>
+      </div>
     </div>
   </section>
 

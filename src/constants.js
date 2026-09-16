@@ -22,7 +22,7 @@ const LOVE_FELLOWSHIPS = [
   { name: "Brunei Love Fellowship", slug: "brunei-love-fellowship" },
 ];
 
-const SUB_MINISTRIES = ["Aloud Choir", "Aloud Creative"];
+const SUB_MINISTRIES = ["Aloud Choir", "Aloud Creative", "The Eye", "TAF 01"];
 
 const EXECUTIVE_POSITIONS = ["President", "Secretary"];
 

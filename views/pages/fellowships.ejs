@@ -3,28 +3,44 @@
 <%- include('../partials/flash') %>
 
 <main class="container page">
-  <section class="section-heading">
-    <div>
+  <section class="hero-panel">
+    <div class="hero-copy">
       <span class="eyebrow">Love Fellowships</span>
-      <h1>Fellowships</h1>
-      <p>Open a fellowship to view members, leadership, and weekly attendance.</p>
+      <h1>See every fellowship in one place.</h1>
+      <p>Open a fellowship to review members, leadership, and this week’s turnout without digging through the whole database.</p>
+    </div>
+    <div class="hero-actions">
+      <a href="/dashboard" class="button button-light">Back to Dashboard</a>
+      <a href="/members" class="button button-outline">Members</a>
+    </div>
+    <div class="hero-metrics">
+      <div class="metric-pill">
+        <strong><%= fellowships.length %></strong>
+        <span>Fellowships</span>
+      </div>
+      <div class="metric-pill">
+        <strong><%= fellowships.reduce((sum, fellowship) => sum + fellowship.memberCount, 0) %></strong>
+        <span>Members</span>
+      </div>
+      <div class="metric-pill">
+        <strong><%= fellowships.filter((fellowship) => fellowship.attendance).length %></strong>
+        <span>Tracked</span>
+      </div>
     </div>
   </section>
 
-  <section class="three-column">
-    <% fellowships.forEach((fellowship) => { %>
-      <article class="card">
-        <div class="section-heading">
-          <div>
-            <h2><%= fellowship.name %></h2>
-            <p><%= fellowship.memberCount %> member<%= fellowship.memberCount === 1 ? '' : 's' %></p>
-          </div>
+  <section class="three-column fellowship-lane">
+    <% fellowships.forEach((fellowship, index) => { %>
+      <article class="card fellowship-card" data-accent="<%= ['blue','orange','slate'][index % 3] %>">
+        <div>
+          <span class="eyebrow"><%= fellowship.memberCount %> member<%= fellowship.memberCount === 1 ? '' : 's' %></span>
+          <h2><%= fellowship.name %></h2>
         </div>
-        <p class="muted">
+        <p class="member-meta">
           <%= fellowship.attendance ? fellowship.attendance.headline : `No attendance captured yet for ${fellowship.name}.` %>
         </p>
         <div class="button-row">
-          <a href="/fellowships/<%= fellowship.slug %>" class="button">Open Fellowship</a>
+          <a href="/fellowships/<%= fellowship.slug %>" class="button">Open</a>
           <a href="/fellowships/<%= fellowship.slug %>/attendance" class="button button-outline">Attendance</a>
         </div>
       </article>
