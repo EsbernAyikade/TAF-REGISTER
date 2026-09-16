@@ -19,6 +19,9 @@
 
     <nav class="nav" aria-label="Main navigation">
       <% if (currentUser) { %>
+        <form action="/members" method="get" class="nav-search" role="search">
+          <input type="search" name="search" placeholder="Find member..." aria-label="Search members globally" />
+        </form>
         <a href="/dashboard" class="nav-link <%= currentPath === '/dashboard' ? 'active' : '' %>">Dashboard</a>
         <a href="/members" class="nav-link <%= ((currentPath === '/members' || currentPath === '/members/new' || (currentPath.startsWith('/members/') && !currentPath.startsWith('/members/import'))) || currentPath.startsWith('/exports')) ? 'active' : '' %>">Members</a>
         <a href="/fellowships" class="nav-link <%= currentPath === '/fellowships' || currentPath.startsWith('/fellowships/') ? 'active' : '' %>">Fellowships</a>

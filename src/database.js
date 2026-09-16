@@ -134,6 +134,20 @@ function initializeDatabase() {
       FOREIGN KEY (sub_ministry_id) REFERENCES sub_ministries(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS member_fellowship_transfers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      member_id INTEGER NOT NULL,
+      from_fellowship_id INTEGER,
+      to_fellowship_id INTEGER,
+      transferred_by_user_id INTEGER,
+      notes TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE,
+      FOREIGN KEY (from_fellowship_id) REFERENCES fellowships(id),
+      FOREIGN KEY (to_fellowship_id) REFERENCES fellowships(id),
+      FOREIGN KEY (transferred_by_user_id) REFERENCES users(id)
+    );
+
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       full_name TEXT NOT NULL,

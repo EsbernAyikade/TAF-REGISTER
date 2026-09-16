@@ -140,10 +140,41 @@
   </section>
 
   <section class="card">
+    <div class="section-heading">
+      <div>
+        <h2>Bulk Edit</h2>
+        <p>Select members below, then apply one shared update.</p>
+      </div>
+    </div>
+    <form action="/members/bulk-edit" method="post" class="filter-grid">
+      <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+      <label>
+        <span>Action</span>
+        <select name="action" required>
+          <option value="">Choose action</option>
+          <option value="fellowship">Change Fellowship</option>
+          <option value="subMinistry">Set Sub-ministry</option>
+          <option value="status">Set Status</option>
+          <option value="level">Set Level</option>
+        </select>
+      </label>
+      <label>
+        <span>Value</span>
+        <input type="text" name="value" placeholder="Enter ID/value (e.g. fellowship id, status, level)" required />
+      </label>
+      <div class="form-actions">
+        <button type="submit" class="button">Apply to Selected</button>
+      </div>
+      <div class="fine-print">Tip: Fellowship and Sub-ministry actions expect the numeric ID from the relevant list.</div>
+    </form>
+  </section>
+
+  <section class="card">
     <div class="table-wrap">
       <table>
         <thead>
           <tr>
+            <th>Select</th>
             <th>Name</th>
             <th>Fellowship</th>
             <th>Role</th>
@@ -156,7 +187,7 @@
         <tbody>
           <% if (members.length === 0) { %>
             <tr>
-              <td colspan="7">
+              <td colspan="8">
                 <div class="empty-state">
                   <strong>No members match the selected filters</strong>
                   <p class="muted">Try clearing a filter or broadening your search.</p>
@@ -167,6 +198,9 @@
           <% } %>
           <% members.forEach((member) => { %>
             <tr>
+              <td data-label="Select">
+                <input form="bulk-form" type="checkbox" name="memberIds" value="<%= member.id %>" />
+              </td>
               <td data-label="Name">
                 <a href="/members/<%= member.id %>"><%= member.full_name %></a>
                 <% if (isNewMember(member.joined_at)) { %>
@@ -205,6 +239,10 @@
       </table>
     </div>
   </section>
+
+  <form id="bulk-form" action="/members/bulk-edit" method="post" style="display:none;">
+    <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+  </form>
 </main>
 
 <%- include('../partials/footer') %>

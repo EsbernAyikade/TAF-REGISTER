@@ -516,6 +516,16 @@ function getMemberSubMinistryIds(memberId) {
     return ids;
   }
 
+  function parseBulkIds(rawIds) {
+    if (Array.isArray(rawIds)) {
+      return rawIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0);
+    }
+    if (!rawIds) {
+      return [];
+    }
+    return [Number(rawIds)].filter((id) => Number.isFinite(id) && id > 0);
+  }
+
   const legacy = db
     .prepare("SELECT sub_ministry_id FROM members WHERE id = ? AND sub_ministry_id IS NOT NULL")
     .get(memberId);
@@ -1250,6 +1260,80 @@ app.get("/members", requireAuth, (req, res) => {
   });
 });
 
+app.post("/members/bulk-edit", requireAuth, (req, res) => {
+  const selectedIds = [...new Set(parseBulkIds(req.body.memberIds))];
+  if (selectedIds.length === 0) {
+    setFlash(req, "warning", "Select at least one member before bulk editing.");
+    return res.redirect("/members");
+  }
+
+  const action = String(req.body.action || "").trim();
+  const value = String(req.body.value || "").trim();
+  if (!action) {
+    setFlash(req, "error", "Choose a bulk action.");
+    return res.redirect("/members");
+  }
+
+  const placeholders = selectedIds.map(() => "?").join(",");
+  const members = db
+    .prepare(`SELECT id, full_name FROM members WHERE id IN (${placeholders})`)
+    .all(...selectedIds);
+  if (members.length === 0) {
+    setFlash(req, "error", "No valid members were selected.");
+    return res.redirect("/members");
+  }
+
+  if (action === "fellowship") {
+    const fellowshipId = Number(value);
+    if (!Number.isFinite(fellowshipId) || fellowshipId <= 0) {
+      setFlash(req, "error", "Select a valid fellowship.");
+      return res.redirect("/members");
+    }
+
+    db.transaction(() => {
+      members.forEach((member) => {
+        db.prepare(
+          "UPDATE members SET fellowship_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        ).run(fellowshipId, member.id);
+      });
+    })();
+  } else if (action === "status") {
+    if (!MEMBER_STATUSES.includes(value)) {
+      setFlash(req, "error", "Select a valid status.");
+      return res.redirect("/members");
+    }
+    db.prepare(
+      `UPDATE members SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`
+    ).run(value, ...selectedIds);
+  } else if (action === "level") {
+    if (!value) {
+      setFlash(req, "error", "Select a level.");
+      return res.redirect("/members");
+    }
+    db.prepare(
+      `UPDATE members SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`
+    ).run(value, ...selectedIds);
+  } else if (action === "subMinistry") {
+    const subMinistryId = Number(value);
+    if (!Number.isFinite(subMinistryId) || subMinistryId <= 0) {
+      setFlash(req, "error", "Select a valid sub-ministry.");
+      return res.redirect("/members");
+    }
+    db.transaction(() => {
+      members.forEach((member) => {
+        setMemberSubMinistries(member.id, [subMinistryId]);
+      });
+    })();
+  } else {
+    setFlash(req, "error", "Unsupported bulk action.");
+    return res.redirect("/members");
+  }
+
+  logAudit(null, "members_bulk_edited", "member", null, `${action}:${value}; count=${members.length}`);
+  setFlash(req, "success", `Bulk update applied to ${members.length} member(s).`);
+  return res.redirect("/members");
+});
+
 function addDaysToIsoDate(isoDate, days) {
   const date = new Date(`${isoDate}T00:00:00Z`);
   date.setUTCDate(date.getUTCDate() + days);
@@ -1945,6 +2029,47 @@ app.get("/members/:id", requireAuth, (req, res) => {
     )
     .all(member.id, member.fellowship_id);
 
+  const transferHistory = db
+    .prepare(
+      `
+        SELECT member_fellowship_transfers.*,
+               from_fellowship.name AS from_fellowship_name,
+               to_fellowship.name AS to_fellowship_name
+        FROM member_fellowship_transfers
+        LEFT JOIN fellowships AS from_fellowship ON from_fellowship.id = member_fellowship_transfers.from_fellowship_id
+        LEFT JOIN fellowships AS to_fellowship ON to_fellowship.id = member_fellowship_transfers.to_fellowship_id
+        WHERE member_fellowship_transfers.member_id = ?
+        ORDER BY member_fellowship_transfers.created_at DESC
+      `
+    )
+    .all(member.id);
+
+  const attendanceByFellowship = db
+    .prepare(
+      `
+        SELECT
+          attendance_sessions.fellowship_id,
+          COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name,
+          attendance_sessions.week_start,
+          attendance_sessions.week_end,
+          attendance_records.present
+        FROM attendance_sessions
+        LEFT JOIN attendance_records
+          ON attendance_records.attendance_session_id = attendance_sessions.id
+         AND attendance_records.member_id = ?
+        LEFT JOIN fellowships ON fellowships.id = attendance_sessions.fellowship_id
+        WHERE attendance_sessions.fellowship_id IN (
+          SELECT DISTINCT COALESCE(to_fellowship_id, from_fellowship_id)
+          FROM member_fellowship_transfers
+          WHERE member_id = ?
+          UNION
+          SELECT COALESCE(?, attendance_sessions.fellowship_id)
+        )
+        ORDER BY fellowship_name, attendance_sessions.week_start ASC
+      `
+    )
+    .all(member.id, member.id, member.fellowship_id);
+
   const rate = attendanceStats.total_weeks
     ? Math.round((attendanceStats.attended_weeks / attendanceStats.total_weeks) * 100)
     : 0;
@@ -1965,6 +2090,8 @@ app.get("/members/:id", requireAuth, (req, res) => {
       attendance_rate: attendanceInsights.attendanceRate,
     },
     attendanceHistory,
+    attendanceByFellowship,
+    transferHistory,
     attendanceGroups: attendanceInsights.monthGroups,
     canManage: canManageMember(req.currentUser, member),
     weekLabel: getWeekLabel,
@@ -1982,6 +2109,68 @@ app.get("/members/:id/edit", requireAuth, (req, res) => {
       currentPath: req.path,
       csrfToken: res.locals.csrfToken || "",
     });
+
+    app.post("/members/:id/merge", requireAuth, (req, res) => {
+      const winnerId = Number(req.params.id);
+      const loserId = Number(req.body.duplicateMemberId);
+      if (!Number.isFinite(loserId) || loserId <= 0 || loserId === winnerId) {
+        setFlash(req, "error", "Select a valid duplicate record to merge.");
+        return res.redirect(`/members/${winnerId}`);
+      }
+
+      const winner = getMemberWithDetails(winnerId);
+      const loser = getMemberWithDetails(loserId);
+      if (!winner || !loser) {
+        setFlash(req, "error", "One of the selected records could not be found.");
+        return res.redirect(`/members/${winnerId}`);
+      }
+
+      db.transaction(() => {
+        const sessions = db
+          .prepare(
+            `
+              SELECT attendance_records.attendance_session_id, attendance_records.present
+              FROM attendance_records
+              WHERE attendance_records.member_id = ?
+            `
+          )
+          .all(loserId);
+
+        const upsert = db.prepare(
+          `
+            INSERT INTO attendance_records (attendance_session_id, member_id, present)
+            VALUES (?, ?, ?)
+            ON CONFLICT(attendance_session_id, member_id)
+            DO UPDATE SET
+              present = MAX(attendance_records.present, excluded.present),
+              marked_at = CURRENT_TIMESTAMP
+          `
+        );
+        sessions.forEach((row) => upsert.run(row.attendance_session_id, winnerId, row.present));
+
+        db.prepare("DELETE FROM member_sub_ministries WHERE member_id = ?").run(loserId);
+        db.prepare("DELETE FROM attendance_records WHERE member_id = ?").run(loserId);
+        db.prepare("DELETE FROM member_fellowship_transfers WHERE member_id = ?").run(loserId);
+        db.prepare("DELETE FROM members WHERE id = ?").run(loserId);
+
+        const refreshedDuplicates = detectDuplicateMembers({
+          fullName: winner.full_name,
+          email: winner.email,
+          phone: winner.phone,
+          memberId: winnerId,
+        });
+        const duplicateNotes = refreshedDuplicates.length
+          ? refreshedDuplicates.map((item) => `${item.full_name} (${item.email}, ${item.phone})`).join("; ")
+          : null;
+        db.prepare(
+          "UPDATE members SET duplicate_flag = ?, duplicate_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        ).run(refreshedDuplicates.length ? 1 : 0, duplicateNotes, winnerId);
+      })();
+
+      logAudit(null, "member_merged", "member", winnerId, `Merged ${loser.full_name} (${loserId}) into ${winner.full_name} (${winnerId})`);
+      setFlash(req, "success", `Merged ${loser.full_name} into ${winner.full_name}. Attendance history was preserved.`);
+      return res.redirect(`/members/${winnerId}`);
+    });
   }
 
   if (!canManageMember(req.currentUser, member)) {
@@ -1997,6 +2186,54 @@ app.get("/members/:id/edit", requireAuth, (req, res) => {
     pageTitle: `Edit ${member.full_name}`,
     member,
   });
+});
+
+app.post("/members/:id/transfer", requireAuth, (req, res) => {
+  const member = getMemberWithDetails(Number(req.params.id));
+  if (!member) {
+    return res.status(404).render("pages/not-found", {
+      pageTitle: "Member Not Found",
+      currentUser: req.currentUser || res.locals.currentUser || null,
+      currentPath: req.path,
+      csrfToken: res.locals.csrfToken || "",
+    });
+  }
+
+  const toFellowshipId = Number(req.body.toFellowshipId);
+  const notes = String(req.body.notes || "").trim();
+  if (!Number.isFinite(toFellowshipId) || toFellowshipId <= 0) {
+    setFlash(req, "error", "Select the destination fellowship.");
+    return res.redirect(`/members/${member.id}`);
+  }
+
+  if (Number(member.fellowship_id) === toFellowshipId) {
+    setFlash(req, "warning", "Member is already in that fellowship.");
+    return res.redirect(`/members/${member.id}`);
+  }
+
+  const destination = db.prepare("SELECT id, name FROM fellowships WHERE id = ?").get(toFellowshipId);
+  if (!destination) {
+    setFlash(req, "error", "Destination fellowship not found.");
+    return res.redirect(`/members/${member.id}`);
+  }
+
+  const oldFellowshipId = member.fellowship_id || null;
+  db.transaction(() => {
+    db.prepare(
+      "UPDATE members SET fellowship_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).run(toFellowshipId, member.id);
+    db.prepare(
+      `
+        INSERT INTO member_fellowship_transfers (
+          member_id, from_fellowship_id, to_fellowship_id, transferred_by_user_id, notes
+        ) VALUES (?, ?, ?, ?, ?)
+      `
+    ).run(member.id, oldFellowshipId, toFellowshipId, req.currentUser.actorId, notes || null);
+  })();
+
+  logAudit(null, "member_transferred", "member", member.id, `${member.fellowship_name || "No Fellowship"} -> ${destination.name}`);
+  setFlash(req, "success", `${member.full_name} moved to ${destination.name}. Attendance history is preserved and shown by fellowship segment.`);
+  return res.redirect(`/members/${member.id}`);
 });
 
 app.post("/members/:id/edit", requireAuth, (req, res) => {

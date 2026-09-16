@@ -36,6 +36,53 @@
         <div class="notice-box warning-box">
           <strong>Possible duplicate detected</strong>
           <p><%= member.duplicate_notes %></p>
+          <% if (canManage) { %>
+            <form action="/members/<%= member.id %>/merge" method="post" class="stack">
+              <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+              <label>
+                <span>Duplicate member ID to merge into this record</span>
+                <input type="number" name="duplicateMemberId" min="1" required />
+              </label>
+              <button type="submit" class="button button-small">Merge duplicate into this member</button>
+            </form>
+          <% } %>
+        </div>
+      <% } %>
+
+      <% if (canManage) { %>
+        <div class="notice-box">
+          <strong>Transfer Fellowship</strong>
+          <form action="/members/<%= member.id %>/transfer" method="post" class="stack">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+            <label>
+              <span>Move to Love Fellowship</span>
+              <select name="toFellowshipId" required>
+                <option value="">Select fellowship</option>
+                <% fellowships.forEach((f) => { %>
+                  <option value="<%= f.id %>" <%= Number(member.fellowship_id) === Number(f.id) ? 'disabled' : '' %>><%= f.name %></option>
+                <% }) %>
+              </select>
+            </label>
+            <label>
+              <span>Notes (optional)</span>
+              <input type="text" name="notes" placeholder="Reason for transfer" />
+            </label>
+            <button type="submit" class="button button-outline button-small">Transfer member</button>
+          </form>
+        </div>
+      <% } %>
+
+      <% if (transferHistory && transferHistory.length > 0) { %>
+        <div class="notice-box">
+          <strong>Fellowship Transfer History</strong>
+          <div class="list-stack">
+            <% transferHistory.forEach((entry) => { %>
+              <div class="list-item">
+                <span><%= entry.from_fellowship_name || 'No Fellowship' %> → <%= entry.to_fellowship_name || 'No Fellowship' %></span>
+                <small><%= formatDate(entry.created_at) %></small>
+              </div>
+            <% }) %>
+          </div>
         </div>
       <% } %>
     </article>
@@ -111,6 +158,22 @@
           <% }) %>
         <% } %>
       </div>
+
+      <% if (attendanceByFellowship && attendanceByFellowship.length > 0) { %>
+        <div class="notice-box">
+          <strong>Attendance by Fellowship Segment</strong>
+          <div class="list-stack">
+            <% attendanceByFellowship.forEach((entry) => { %>
+              <div class="list-item">
+                <span><%= entry.fellowship_name %> · <%= weekLabel(entry.week_start, entry.week_end) %></span>
+                <span class="badge badge-<%= entry.present === 1 ? 'success' : entry.present === 0 ? 'danger' : 'neutral' %>">
+                  <%= entry.present === 1 ? 'Present' : entry.present === 0 ? 'Absent / Not marked' : 'No session' %>
+                </span>
+              </div>
+            <% }) %>
+          </div>
+        </div>
+      <% } %>
     </article>
   </section>
 </main>
