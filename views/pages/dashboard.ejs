@@ -132,6 +132,85 @@
     </article>
   </section>
 
+  <section class="two-column">
+    <article class="card">
+      <div class="section-heading">
+        <div>
+          <h2>Members Going Quiet (3+ missed weeks)</h2>
+          <p>Members with consecutive absences needing quick follow-up.</p>
+        </div>
+      </div>
+      <div class="list-stack">
+        <% if (!goingQuietMembers || goingQuietMembers.length === 0) { %>
+          <p class="muted">No members currently on a 3+ week absence streak.</p>
+        <% } %>
+        <% (goingQuietMembers || []).slice(0, 12).forEach((member) => { %>
+          <div class="list-item">
+            <div>
+              <strong><a href="/members/<%= member.id %>#attendance-history"><%= member.full_name %></a></strong>
+              <p><%= member.fellowship_name %></p>
+            </div>
+            <span class="badge badge-warning"><%= member.absenceStreak %> weeks</span>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="section-heading">
+        <div>
+          <h2>New Members (<%= newMemberWindowDays %> days)</h2>
+          <p>Recent additions who still need personal onboarding.</p>
+        </div>
+      </div>
+      <div class="list-stack">
+        <% if (!newOnboardingMembers || newOnboardingMembers.length === 0) { %>
+          <p class="muted">No current members in the onboarding window.</p>
+        <% } %>
+        <% (newOnboardingMembers || []).slice(0, 12).forEach((member) => { %>
+          <div class="list-item">
+            <div>
+              <strong><a href="/members/<%= member.id %>"><%= member.full_name %></a></strong>
+              <p><%= member.fellowship_name %></p>
+            </div>
+            <span class="badge badge-info"><%= member.daysSinceJoined %> day(s)</span>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+  </section>
+
+  <section class="card">
+    <div class="section-heading">
+      <div>
+        <h2>Away This Week</h2>
+        <p>Latest absent list per fellowship for calls/messages follow-up.</p>
+      </div>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Fellowship</th>
+            <th>Latest Week</th>
+            <th>Away Count</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% (awayThisWeekSummary || []).forEach((row) => { %>
+            <tr>
+              <td data-label="Fellowship"><a href="/fellowships/<%= row.slug %>"><%= row.name %></a></td>
+              <td data-label="Latest Week"><%= row.weekStart ? weekLabel(row.weekStart, row.weekEnd) : 'No attendance yet' %></td>
+              <td data-label="Away Count"><%= row.absentCount %></td>
+              <td data-label="Action"><a href="/fellowships/<%= row.slug %>/away-this-week" class="button button-small button-outline">Open list</a></td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="three-column">
     <article class="card">
       <h2>Members by Fellowship</h2>

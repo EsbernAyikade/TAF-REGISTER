@@ -95,6 +95,57 @@
     </article>
   </section>
 
+  <section class="two-column">
+    <article class="card">
+      <div class="section-heading">
+        <div>
+          <h2>Going Quiet (3+ missed weeks)</h2>
+          <p>Members currently on consecutive absence streaks.</p>
+        </div>
+      </div>
+      <div class="list-stack">
+        <% if (!goingQuietMembers || goingQuietMembers.length === 0) { %>
+          <p class="muted">No one currently meets the 3+ week absence threshold.</p>
+        <% } %>
+        <% (goingQuietMembers || []).forEach((member) => { %>
+          <div class="list-item">
+            <strong><a href="/members/<%= member.id %>#attendance-history"><%= member.full_name %></a></strong>
+            <span class="badge badge-warning"><%= member.absenceStreak %> weeks</span>
+          </div>
+        <% }) %>
+      </div>
+    </article>
+
+    <article class="card">
+      <div class="section-heading">
+        <div>
+          <h2>Away This Week</h2>
+          <p>Latest attendance session absentees.</p>
+        </div>
+        <a href="/fellowships/<%= fellowship.slug %>/away-this-week" class="button button-small button-outline">Open full list</a>
+      </div>
+      <% if (!awayThisWeek.session) { %>
+        <p class="muted">No attendance session has been recorded yet.</p>
+      <% } else { %>
+        <p class="muted">
+          Week: <%= weekLabel(awayThisWeek.session.week_start, awayThisWeek.session.week_end) %> ·
+          <strong><%= awayThisWeek.absentMembers.length %></strong> absent
+        </p>
+        <div class="list-stack">
+          <% if (awayThisWeek.absentMembers.length === 0) { %>
+            <p class="muted">No absentees in the latest recorded week.</p>
+          <% } %>
+          <% awayThisWeek.absentMembers.slice(0, 8).forEach((member) => { %>
+            <div class="list-item">
+              <strong><a href="/members/<%= member.id %>#attendance-history"><%= member.full_name %></a></strong>
+              <span><%= member.phone || 'No phone' %></span>
+            </div>
+          <% }) %>
+        </div>
+      <% } %>
+    </article>
+  </section>
+
   <section class="card">
     <div class="section-heading">
       <div>

@@ -33,6 +33,7 @@ const isProduction = process.env.NODE_ENV === "production";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 3000);
 const SESSION_SECRET = process.env.SESSION_SECRET || (isProduction ? null : "dev-only-local-session-secret");
+const NEW_MEMBER_WINDOW_DAYS = Number(process.env.NEW_MEMBER_WINDOW_DAYS || 42);
 
 if (isProduction && !SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production.");
@@ -115,6 +116,24 @@ function getInternalActorId() {
     throw new Error("No internal actor is available for shared-access actions.");
   }
 
+  function getDaysSince(value) {
+    if (!value) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return Number.POSITIVE_INFINITY;
+    }
+
+    return Math.floor((Date.now() - parsed.getTime()) / (1000 * 60 * 60 * 24));
+  }
+
+  function isNewMember(joinedAt) {
+    const days = getDaysSince(joinedAt);
+    return Number.isFinite(days) && days >= 0 && days <= NEW_MEMBER_WINDOW_DAYS;
+  }
+
   return actor.id;
 }
 
@@ -187,6 +206,8 @@ app.use((req, res, next) => {
           year: "numeric",
         }).format(new Date(value))
       : "—";
+  res.locals.isNewMember = isNewMember;
+  res.locals.newMemberWindowDays = NEW_MEMBER_WINDOW_DAYS;
   res.locals.isManager = Boolean(user);
   req.currentUser = user;
 
@@ -762,6 +783,136 @@ function getAttendanceSummaryForWeek(weekStart) {
     }));
 }
 
+function getCurrentAbsenceStreak(memberId, fellowshipId) {
+  if (!memberId || !fellowshipId) {
+    return { streak: 0, mostRecentWeek: null };
+  }
+
+  const history = db
+    .prepare(
+      `
+        SELECT attendance_sessions.week_start, attendance_records.present
+        FROM attendance_sessions
+        LEFT JOIN attendance_records
+          ON attendance_records.attendance_session_id = attendance_sessions.id
+         AND attendance_records.member_id = ?
+        WHERE attendance_sessions.fellowship_id = ?
+        ORDER BY attendance_sessions.week_start DESC
+      `
+    )
+    .all(memberId, fellowshipId);
+
+  let streak = 0;
+  for (const entry of history) {
+    if (Number(entry.present) === 1) {
+      break;
+    }
+    streak += 1;
+  }
+
+  return {
+    streak,
+    mostRecentWeek: history.length > 0 ? history[0].week_start : null,
+  };
+}
+
+function getGoingQuietMembers({ minStreak = 3, fellowshipId = null } = {}) {
+  const query = fellowshipId
+    ? `
+        SELECT members.id, members.full_name, members.joined_at, members.fellowship_id,
+               fellowships.name AS fellowship_name, fellowships.slug AS fellowship_slug
+        FROM members
+        JOIN fellowships ON fellowships.id = members.fellowship_id
+        WHERE members.status = 'Active' AND members.fellowship_id = ?
+        ORDER BY members.full_name
+      `
+    : `
+        SELECT members.id, members.full_name, members.joined_at, members.fellowship_id,
+               COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name,
+               fellowships.slug AS fellowship_slug
+        FROM members
+        LEFT JOIN fellowships ON fellowships.id = members.fellowship_id
+        WHERE members.status = 'Active'
+        ORDER BY members.full_name
+      `;
+
+  const members = fellowshipId
+    ? db.prepare(query).all(fellowshipId)
+    : db.prepare(query).all();
+
+  return members
+    .map((member) => {
+      const absence = getCurrentAbsenceStreak(member.id, member.fellowship_id);
+      return {
+        ...member,
+        absenceStreak: absence.streak,
+        mostRecentWeek: absence.mostRecentWeek,
+      };
+    })
+    .filter((member) => member.absenceStreak >= minStreak)
+    .sort(
+      (a, b) =>
+        b.absenceStreak - a.absenceStreak ||
+        String(a.fellowship_name).localeCompare(String(b.fellowship_name)) ||
+        a.full_name.localeCompare(b.full_name)
+    );
+}
+
+function getNewMembersForOnboarding() {
+  return db
+    .prepare(
+      `
+        SELECT members.id, members.full_name, members.joined_at,
+               COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name,
+               fellowships.slug AS fellowship_slug
+        FROM members
+        LEFT JOIN fellowships ON fellowships.id = members.fellowship_id
+        WHERE members.status = 'Active'
+        ORDER BY members.joined_at DESC
+      `
+    )
+    .all()
+    .map((member) => ({
+      ...member,
+      daysSinceJoined: getDaysSince(member.joined_at),
+    }))
+    .filter((member) => member.daysSinceJoined >= 0 && member.daysSinceJoined <= NEW_MEMBER_WINDOW_DAYS)
+    .sort((a, b) => a.daysSinceJoined - b.daysSinceJoined);
+}
+
+function getLatestAwayListForFellowship(fellowshipId) {
+  const latestSession = db
+    .prepare(
+      `
+        SELECT id, week_start, week_end
+        FROM attendance_sessions
+        WHERE fellowship_id = ?
+        ORDER BY week_start DESC
+        LIMIT 1
+      `
+    )
+    .get(fellowshipId);
+
+  if (!latestSession) {
+    return { session: null, absentMembers: [] };
+  }
+
+  const absentMembers = db
+    .prepare(
+      `
+        SELECT members.id, members.full_name, members.phone, members.hostel, members.room_no
+        FROM attendance_records
+        JOIN members ON members.id = attendance_records.member_id
+        WHERE attendance_records.attendance_session_id = ?
+          AND attendance_records.present = 0
+        ORDER BY members.full_name
+      `
+    )
+    .all(latestSession.id);
+
+  return { session: latestSession, absentMembers };
+}
+
 app.get("/", (req, res) => {
   return res.redirect(req.currentUser ? "/dashboard" : "/login");
 });
@@ -1028,6 +1179,20 @@ app.get("/dashboard", requireAuth, (req, res) => {
     (sum, item) => sum + item.present_total,
     0
   );
+  const goingQuietMembers = getGoingQuietMembers({ minStreak: 3 });
+  const newOnboardingMembers = getNewMembersForOnboarding();
+  const awayThisWeekSummary = db
+    .prepare("SELECT id, name, slug FROM fellowships ORDER BY name")
+    .all()
+    .map((fellowship) => {
+      const away = getLatestAwayListForFellowship(fellowship.id);
+      return {
+        ...fellowship,
+        weekStart: away.session ? away.session.week_start : null,
+        weekEnd: away.session ? away.session.week_end : null,
+        absentCount: away.absentMembers.length,
+      };
+    });
 
   res.render("pages/dashboard", {
     pageTitle: "Dashboard",
@@ -1041,6 +1206,10 @@ app.get("/dashboard", requireAuth, (req, res) => {
     birthdaysThisMonth,
     attendanceSummary,
     totalAttendanceThisWeek,
+    goingQuietMembers,
+    newOnboardingMembers,
+    awayThisWeekSummary,
+    weekLabel: getWeekLabel,
   });
 });
 
@@ -1799,6 +1968,8 @@ app.get("/members/:id", requireAuth, (req, res) => {
     attendanceGroups: attendanceInsights.monthGroups,
     canManage: canManageMember(req.currentUser, member),
     weekLabel: getWeekLabel,
+    isNew: isNewMember(member.joined_at),
+    daysSinceJoined: getDaysSince(member.joined_at),
   });
 });
 
@@ -2035,6 +2206,11 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
         ? Math.round((row.present_total / stats.totalMembers) * 100)
         : 0,
     }));
+  const goingQuietMembers = getGoingQuietMembers({
+    minStreak: 3,
+    fellowshipId: fellowship.id,
+  });
+  const awayThisWeek = getLatestAwayListForFellowship(fellowship.id);
 
   res.render("pages/fellowship", {
     pageTitle: fellowship.name,
@@ -2046,9 +2222,54 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
     currentWeekEnd,
     attendanceHeadline,
     trend,
+    goingQuietMembers,
+    awayThisWeek,
+    weekLabel: getWeekLabel,
     canManage: canManageFellowship(req.currentUser, fellowship.id),
   });
 });
+
+app.get(
+  "/fellowships/:slug/away-this-week",
+  requireAuth,
+  requireManagerForFellowship,
+  (req, res) => {
+    const fellowship = db
+      .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
+      .get(req.params.slug);
+
+    const awayThisWeek = getLatestAwayListForFellowship(fellowship.id);
+
+    res.render("pages/away-this-week", {
+      pageTitle: `${fellowship.name} Away This Week`,
+      fellowship,
+      session: awayThisWeek.session,
+      absentMembers: awayThisWeek.absentMembers,
+      weekLabel: getWeekLabel,
+    });
+  }
+);
+
+app.get(
+  "/fellowships/:slug/away-this-week/print",
+  requireAuth,
+  requireManagerForFellowship,
+  (req, res) => {
+    const fellowship = db
+      .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
+      .get(req.params.slug);
+    const awayThisWeek = getLatestAwayListForFellowship(fellowship.id);
+
+    res.render("pages/away-this-week-print", {
+      pageTitle: `${fellowship.name} Away This Week (Print)`,
+      fellowship,
+      session: awayThisWeek.session,
+      absentMembers: awayThisWeek.absentMembers,
+      weekLabel: getWeekLabel,
+      generatedAt: new Date().toISOString(),
+    });
+  }
+);
 
 app.get(
   "/fellowships/:slug/attendance",

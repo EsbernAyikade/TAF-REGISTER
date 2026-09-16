@@ -169,6 +169,9 @@
             <tr>
               <td data-label="Name">
                 <a href="/members/<%= member.id %>"><%= member.full_name %></a>
+                <% if (isNewMember(member.joined_at)) { %>
+                  <span class="badge badge-info">New</span>
+                <% } %>
                 <% if (member.duplicate_flag) { %>
                   <div><span class="badge badge-warning">Duplicate flag</span></div>
                 <% } %>

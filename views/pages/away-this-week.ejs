@@ -1,0 +1,70 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<%- include('../partials/flash') %>
+
+<main class="container page">
+  <nav class="page-breadcrumbs" aria-label="Breadcrumb">
+    <a href="/dashboard">Dashboard</a>
+    <span class="divider">/</span>
+    <a href="/fellowships/<%= fellowship.slug %>"><%= fellowship.name %></a>
+    <span class="divider">/</span>
+    <span>Away This Week</span>
+  </nav>
+
+  <section class="section-heading">
+    <div>
+      <span class="eyebrow">Follow-up List</span>
+      <h1><%= fellowship.name %> — Away This Week</h1>
+      <% if (session) { %>
+        <p>Members marked absent for <%= weekLabel(session.week_start, session.week_end) %>.</p>
+      <% } else { %>
+        <p>No attendance session has been recorded for this fellowship yet.</p>
+      <% } %>
+    </div>
+    <div class="button-row">
+      <a href="/fellowships/<%= fellowship.slug %>" class="button button-outline">Back to Fellowship</a>
+      <a href="/fellowships/<%= fellowship.slug %>/away-this-week/print" class="button">Printable View</a>
+    </div>
+  </section>
+
+  <section class="card">
+    <% if (!session) { %>
+      <div class="empty-state">
+        <strong>No attendance session yet</strong>
+        <p class="muted">Record attendance first, then this list will automatically show absentees.</p>
+      </div>
+    <% } else if (absentMembers.length === 0) { %>
+      <div class="empty-state">
+        <strong>No absentees this week 🎉</strong>
+        <p class="muted">Everyone in the recorded session was marked present.</p>
+      </div>
+    <% } else { %>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>Hostel</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% absentMembers.forEach((member) => { %>
+              <tr>
+                <td data-label="Name"><a href="/members/<%= member.id %>"><%= member.full_name %></a></td>
+                <td data-label="Phone"><%= member.phone || '—' %></td>
+                <td data-label="Hostel"><%= member.hostel || '—' %><%= member.room_no ? ` / ${member.room_no}` : '' %></td>
+                <td data-label="Actions">
+                  <a href="/members/<%= member.id %>#attendance-history" class="button button-small button-outline">View history</a>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+    <% } %>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>

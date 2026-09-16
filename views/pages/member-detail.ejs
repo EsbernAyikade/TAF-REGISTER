@@ -6,7 +6,7 @@
   <section class="section-heading">
     <div>
       <span class="eyebrow">Member Record</span>
-      <h1><%= member.full_name %></h1>
+      <h1><%= member.full_name %> <% if (isNew) { %><span class="badge badge-info">New</span><% } %></h1>
       <p><%= member.fellowship_name || 'No Fellowship' %> · <%= member.role_name || 'Regular Member' %></p>
     </div>
     <% if (canManage) { %>
@@ -17,7 +17,7 @@
   </section>
 
   <section class="two-column">
-    <article class="card">
+    <article class="card" id="attendance-history">
       <h2>Member Information</h2>
       <dl class="detail-grid">
         <div><dt>Gender</dt><dd><%= member.gender || '—' %></dd></div>
