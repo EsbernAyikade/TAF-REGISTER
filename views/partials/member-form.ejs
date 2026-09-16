@@ -124,8 +124,8 @@
   <div class="form-grid">
     <label>
       <span>Love Fellowship</span>
-      <select name="fellowshipId" id="fellowship-select" required>
-        <option value="">Select fellowship</option>
+      <select name="fellowshipId" id="fellowship-select">
+        <option value="">Not tied to a fellowship (RD/CD only)</option>
         <% fellowships.forEach((fellowship) => { %>
           <option value="<%= fellowship.id %>" <%= Number(member.fellowship_id) === Number(fellowship.id) ? 'selected' : '' %>><%= fellowship.name %></option>
         <% }) %>
@@ -177,11 +177,13 @@
     const fellowshipSelect = document.getElementById("fellowship-select");
     const roleSelect = document.getElementById("role-select");
     const roleCatalog = <%- JSON.stringify(roleCatalogByFellowship) %>;
+    const allRoles = <%- JSON.stringify(allRoles || []) %>;
     const selectedRoleId = "<%= member.role_id || '' %>";
+    const roleById = new Map(allRoles.map((role) => [String(role.id), role]));
 
     function renderRoles() {
       const fellowshipId = fellowshipSelect.value;
-      const roles = roleCatalog[fellowshipId] || [];
+      const roles = fellowshipId ? (roleCatalog[fellowshipId] || []) : (roleCatalog[""] || []);
       roleSelect.innerHTML = '<option value="">Regular Member</option>';
 
       roles.forEach((role) => {
@@ -193,6 +195,19 @@
         }
         roleSelect.appendChild(option);
       });
+
+      enforceFellowshipRequirement();
+    }
+
+    function enforceFellowshipRequirement() {
+      const selectedRole = roleById.get(String(roleSelect.value || ""));
+      const globalRoleSelected = selectedRole && selectedRole.scope_type !== "fellowship";
+      fellowshipSelect.required = !globalRoleSelected;
+      fellowshipSelect.setCustomValidity(
+        !fellowshipSelect.value && !globalRoleSelected
+          ? "Select a Love Fellowship unless the selected role is RD or CD."
+          : ""
+      );
     }
 
     fellowshipSelect.addEventListener("change", () => {
@@ -201,7 +216,9 @@
       if (currentSelection && Array.from(roleSelect.options).some((option) => option.value === currentSelection)) {
         roleSelect.value = currentSelection;
       }
+      enforceFellowshipRequirement();
     });
+    roleSelect.addEventListener("change", enforceFellowshipRequirement);
 
     renderRoles();
   })();

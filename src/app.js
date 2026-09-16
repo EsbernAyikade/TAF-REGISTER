@@ -52,7 +52,7 @@ function parseBooleanEnv(value, defaultValue) {
   return defaultValue;
 }
 
-const PUBLIC_ACCESS = parseBooleanEnv(PUBLIC_ACCESS_RAW, true);
+const PUBLIC_ACCESS = parseBooleanEnv(PUBLIC_ACCESS_RAW, false);
 const SESSION_SECRET = process.env.SESSION_SECRET || (isProduction ? null : "dev-only-local-session-secret");
 
 if (isProduction && !SESSION_SECRET) {
@@ -182,15 +182,16 @@ app.use((req, res, next) => {
     )
     .all();
 
+  const globalRoles = roles.filter((role) => role.scope_type !== "fellowship");
   const roleCatalogByFellowship = fellowships.reduce((catalog, fellowship) => {
     const fellowshipRoles = roles.filter(
       (role) =>
         role.scope_type === "fellowship" && role.fellowship_id === fellowship.id
     );
-    const globalRoles = roles.filter((role) => role.scope_type !== "fellowship");
     catalog[fellowship.id] = [...fellowshipRoles, ...globalRoles];
     return catalog;
   }, {});
+  roleCatalogByFellowship[""] = globalRoles;
 
   res.locals.currentUser = user;
   res.locals.isProduction = isProduction;
@@ -238,7 +239,7 @@ function requireAuth(req, res, next) {
 }
 
 function canManageFellowship(user, fellowshipId) {
-  return Boolean(user && fellowshipId);
+  return Boolean(user);
 }
 
 function requireManagerForFellowship(req, res, next) {
@@ -292,9 +293,9 @@ function getBirthdaysForWindow(daySpan) {
     .prepare(
       `
         SELECT members.id, members.full_name, members.birth_day, members.birth_month,
-               fellowships.name AS fellowship_name
+               COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name
         FROM members
-        JOIN fellowships ON fellowships.id = members.fellowship_id
+        LEFT JOIN fellowships ON fellowships.id = members.fellowship_id
         WHERE members.birth_day IS NOT NULL
           AND members.birth_month IS NOT NULL
         ORDER BY members.birth_month, members.birth_day, members.full_name
@@ -329,9 +330,9 @@ function getBirthdaysThisMonth() {
     .prepare(
       `
         SELECT members.id, members.full_name, members.birth_day, members.birth_month,
-               fellowships.name AS fellowship_name
+               COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name
         FROM members
-        JOIN fellowships ON fellowships.id = members.fellowship_id
+        LEFT JOIN fellowships ON fellowships.id = members.fellowship_id
         WHERE members.birth_month = ?
         ORDER BY members.birth_day, members.full_name
       `
@@ -397,6 +398,16 @@ function validateRoleForFellowship(roleId, fellowshipId) {
   return true;
 }
 
+function getRoleDetails(roleId) {
+  if (!roleId) {
+    return null;
+  }
+
+  return db
+    .prepare("SELECT id, scope_type, fellowship_id FROM roles WHERE id = ?")
+    .get(roleId);
+}
+
 function parseCsvLine(line) {
   const cells = [];
   let current = "";
@@ -442,7 +453,10 @@ function parseMemberPayload(body) {
     hostel: String(body.hostel || "").trim(),
     roomNo: String(body.roomNo || "").trim(),
     courseId: body.courseId ? Number(body.courseId) : null,
-    fellowshipId: Number(body.fellowshipId),
+    fellowshipId:
+      body.fellowshipId && Number.isFinite(Number(body.fellowshipId)) && Number(body.fellowshipId) > 0
+        ? Number(body.fellowshipId)
+        : null,
     subMinistryIds: rawSubMinistryIds
       .flatMap((value) => String(value).split(","))
       .map((value) => Number(String(value).trim()))
@@ -456,16 +470,26 @@ function parseMemberPayload(body) {
   };
 }
 
-// Only a name and a Love Fellowship are truly required. Real attendance
-// registers (paper books digitized into spreadsheets, like the bulk-import
-// files fellowships actually keep) very often lack a phone number, birthday,
-// hostel, or course for a given member — that's a data-quality reality, not
-// something the app should block on. Anything else provided is validated for
-// correctness (a birthday, if given, must be a real day/month combination),
-// but nothing else is mandatory.
+// Only a name is always required. Love Fellowship is required for regular
+// members and fellowship-scoped roles, but RD/CD can be saved without one.
+// Real attendance registers (paper books digitized into spreadsheets, like
+// the bulk-import files fellowships actually keep) very often lack a phone
+// number, birthday, hostel, or course for a given member — that's a
+// data-quality reality, not something the app should block on. Anything else
+// provided is validated for correctness (a birthday, if given, must be a real
+// day/month combination), but nothing else is mandatory.
 function validateMemberPayload(payload) {
-  if (!payload.fullName || !payload.fellowshipId) {
-    return "A full name and a Love Fellowship are required.";
+  if (!payload.fullName) {
+    return "A full name is required.";
+  }
+
+  const selectedRole = getRoleDetails(payload.roleId);
+  if (payload.roleId && !selectedRole) {
+    return "Please choose a valid role.";
+  }
+
+  if (!payload.fellowshipId && (!selectedRole || selectedRole.scope_type === "fellowship")) {
+    return "Love Fellowship is required unless the selected role is RD or CD.";
   }
 
   if (payload.birthDay && payload.birthMonth && !isValidBirthDate(payload.birthDay, payload.birthMonth)) {
@@ -476,7 +500,7 @@ function validateMemberPayload(payload) {
     return "Please provide both a birth day and a birth month, or leave both blank.";
   }
 
-  if (!validateRoleForFellowship(payload.roleId, payload.fellowshipId)) {
+  if (payload.roleId && !validateRoleForFellowship(payload.roleId, payload.fellowshipId)) {
     return "Selected role does not match the chosen Love Fellowship.";
   }
 
@@ -659,7 +683,7 @@ function buildMembersQuery(filters) {
   const sql = `
     SELECT members.*,
            courses.name AS course_name,
-           fellowships.name AS fellowship_name,
+           COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name,
            fellowships.slug AS fellowship_slug,
            COALESCE(
              (
@@ -679,7 +703,7 @@ function buildMembersQuery(filters) {
            roles.role_type
     FROM members
     LEFT JOIN courses ON courses.id = members.course_id
-    JOIN fellowships ON fellowships.id = members.fellowship_id
+    LEFT JOIN fellowships ON fellowships.id = members.fellowship_id
     LEFT JOIN roles ON roles.id = members.role_id
     ${whereClause}
     ORDER BY members.full_name
@@ -694,7 +718,7 @@ function getMemberWithDetails(memberId) {
       `
         SELECT members.*,
                courses.name AS course_name,
-               fellowships.name AS fellowship_name,
+               COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name,
                fellowships.slug AS fellowship_slug,
                COALESCE(
                  (
@@ -714,7 +738,7 @@ function getMemberWithDetails(memberId) {
                roles.role_type
         FROM members
         LEFT JOIN courses ON courses.id = members.course_id
-        JOIN fellowships ON fellowships.id = members.fellowship_id
+        LEFT JOIN fellowships ON fellowships.id = members.fellowship_id
         LEFT JOIN roles ON roles.id = members.role_id
         WHERE members.id = ?
       `
@@ -723,7 +747,7 @@ function getMemberWithDetails(memberId) {
 }
 
 function canManageMember(user, member) {
-  return Boolean(member && user && canManageFellowship(user, member.fellowship_id));
+  return Boolean(member && user);
 }
 
 function serializeFilters(query) {

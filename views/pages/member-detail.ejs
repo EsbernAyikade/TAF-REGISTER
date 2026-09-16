@@ -7,7 +7,7 @@
     <div>
       <span class="eyebrow">Member Record</span>
       <h1><%= member.full_name %></h1>
-      <p><%= member.fellowship_name %> · <%= member.role_name || 'Regular Member' %></p>
+      <p><%= member.fellowship_name || 'No Fellowship' %> · <%= member.role_name || 'Regular Member' %></p>
     </div>
     <% if (canManage) { %>
       <div class="button-row">

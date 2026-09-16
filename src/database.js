@@ -106,7 +106,7 @@ function initializeDatabase() {
       hostel TEXT,
       room_no TEXT,
       course_id INTEGER,
-      fellowship_id INTEGER NOT NULL,
+      fellowship_id INTEGER,
       sub_ministry_id INTEGER,
       role_id INTEGER,
       phone TEXT,
@@ -283,11 +283,13 @@ function migrateLegacySubMinistryAssignments() {
 }
 
 // Earlier versions of this schema required gender, birth_day, birth_month,
-// hostel, course_id, phone, and email on every member. Real bulk registers
-// (paper attendance books digitized into spreadsheets) routinely omit course,
-// and frequently omit phone/birthday/hostel too. Rather than force admins to
-// invent placeholder data, this migration rebuilds the members table with
-// those columns made optional, preserving every existing row and ID exactly.
+// hostel, course_id, phone, email, and fellowship on every member. Real bulk
+// registers (paper attendance books digitized into spreadsheets) routinely
+// omit course, and frequently omit phone/birthday/hostel too. Also, RD/CD are
+// foundation-wide roles and may not belong to a specific fellowship. Rather
+// than force admins to invent placeholder data, this migration rebuilds the
+// members table with those columns made optional, preserving every existing
+// row and ID exactly.
 // SQLite can't relax a NOT NULL constraint with a plain ALTER TABLE, so a
 // full table rebuild (rename -> recreate -> copy -> drop) is the standard
 // way to do this safely.
@@ -307,7 +309,10 @@ function migrateMembersTableToRelaxedSchema() {
   const columns = db.prepare(`PRAGMA table_info(${sourceTable})`).all();
   const hasRoomNo = columns.some((column) => column.name === "room_no");
   const genderColumn = columns.find((column) => column.name === "gender");
-  const needsRelaxedConstraints = genderColumn && genderColumn.notnull === 1;
+  const fellowshipColumn = columns.find((column) => column.name === "fellowship_id");
+  const needsRelaxedConstraints =
+    (genderColumn && genderColumn.notnull === 1) ||
+    (fellowshipColumn && fellowshipColumn.notnull === 1);
 
   if (legacyTableExists && membersTableExists) {
     db.exec("DROP TABLE members_legacy");
@@ -317,7 +322,8 @@ function migrateMembersTableToRelaxedSchema() {
     const legacyColumns = db.prepare("PRAGMA table_info(members_legacy)").all();
     const legacyHasRoomNo = legacyColumns.some((column) => column.name === "room_no");
     const legacyNeedsRelaxedConstraints =
-      legacyColumns.find((column) => column.name === "gender")?.notnull === 1;
+      legacyColumns.find((column) => column.name === "gender")?.notnull === 1 ||
+      legacyColumns.find((column) => column.name === "fellowship_id")?.notnull === 1;
 
     if (!legacyNeedsRelaxedConstraints && legacyHasRoomNo) {
       db.exec("ALTER TABLE members_legacy RENAME TO members");
@@ -345,7 +351,7 @@ function migrateMembersTableToRelaxedSchema() {
           hostel TEXT,
           room_no TEXT,
           course_id INTEGER,
-          fellowship_id INTEGER NOT NULL,
+          fellowship_id INTEGER,
           sub_ministry_id INTEGER,
           role_id INTEGER,
           phone TEXT,

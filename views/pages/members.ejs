@@ -173,7 +173,13 @@
                   <div><span class="badge badge-warning">Duplicate flag</span></div>
                 <% } %>
               </td>
-              <td data-label="Fellowship"><a href="/fellowships/<%= member.fellowship_slug %>"><%= member.fellowship_name %></a></td>
+              <td data-label="Fellowship">
+                <% if (member.fellowship_slug) { %>
+                  <a href="/fellowships/<%= member.fellowship_slug %>"><%= member.fellowship_name %></a>
+                <% } else { %>
+                  <%= member.fellowship_name %>
+                <% } %>
+              </td>
               <td data-label="Role"><%= member.role_name || 'Regular Member' %></td>
               <td data-label="Course"><%= member.course_name %></td>
               <td data-label="Level"><%= member.level %></td>
