@@ -32,37 +32,10 @@ const app = express();
 const isProduction = process.env.NODE_ENV === "production";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 3000);
-const LEGACY_PUBLIC_ACCESS = process.env.PUBLIC_ACCES;
-const PUBLIC_ACCESS_RAW = process.env.PUBLIC_ACCESS ?? LEGACY_PUBLIC_ACCESS;
-
-function parseBooleanEnv(value, defaultValue) {
-  if (value === undefined || value === null || String(value).trim() === "") {
-    return defaultValue;
-  }
-
-  const normalized = String(value).trim().toLowerCase();
-  if (["1", "true", "yes", "on"].includes(normalized)) {
-    return true;
-  }
-
-  if (["0", "false", "no", "off"].includes(normalized)) {
-    return false;
-  }
-
-  return defaultValue;
-}
-
-const PUBLIC_ACCESS = parseBooleanEnv(PUBLIC_ACCESS_RAW, false);
 const SESSION_SECRET = process.env.SESSION_SECRET || (isProduction ? null : "dev-only-local-session-secret");
 
 if (isProduction && !SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production.");
-}
-
-if (LEGACY_PUBLIC_ACCESS !== undefined && process.env.PUBLIC_ACCESS === undefined) {
-  console.warn(
-    "PUBLIC_ACCES is deprecated; rename it to PUBLIC_ACCESS in your environment settings."
-  );
 }
 
 app.set("trust proxy", 1);
@@ -146,11 +119,9 @@ function getInternalActorId() {
 }
 
 app.use((req, res, next) => {
-  const user = PUBLIC_ACCESS
+  const user = req.session.isAuthenticated
     ? { actorId: getInternalActorId() }
-    : req.session.isAuthenticated
-      ? { actorId: getInternalActorId() }
-      : null;
+    : null;
 
   const fellowships = db
     .prepare("SELECT id, name, slug FROM fellowships ORDER BY name")
@@ -231,7 +202,7 @@ function setFlash(req, type, message) {
 }
 
 function requireAuth(req, res, next) {
-  if (!req.currentUser && !PUBLIC_ACCESS) {
+  if (!req.currentUser) {
     setFlash(req, "warning", "Please sign in to access the member database.");
     return res.redirect("/login");
   }
@@ -792,7 +763,7 @@ function getAttendanceSummaryForWeek(weekStart) {
 }
 
 app.get("/", (req, res) => {
-  return res.redirect(PUBLIC_ACCESS || req.currentUser ? "/dashboard" : "/login");
+  return res.redirect(req.currentUser ? "/dashboard" : "/login");
 });
 
 const BLANK_MEMBER = {
@@ -913,7 +884,7 @@ app.post("/members/new", requireAuth, (req, res) => {
 });
 
 app.get("/login", (req, res) => {
-  if (req.currentUser && !PUBLIC_ACCESS) {
+  if (req.currentUser) {
     return res.redirect("/dashboard");
   }
 
