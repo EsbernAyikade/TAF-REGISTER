@@ -32,11 +32,37 @@ const app = express();
 const isProduction = process.env.NODE_ENV === "production";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 3000);
-const PUBLIC_ACCESS = process.env.PUBLIC_ACCESS !== "false";
+const LEGACY_PUBLIC_ACCESS = process.env.PUBLIC_ACCES;
+const PUBLIC_ACCESS_RAW = process.env.PUBLIC_ACCESS ?? LEGACY_PUBLIC_ACCESS;
+
+function parseBooleanEnv(value, defaultValue) {
+  if (value === undefined || value === null || String(value).trim() === "") {
+    return defaultValue;
+  }
+
+  const normalized = String(value).trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+
+  return defaultValue;
+}
+
+const PUBLIC_ACCESS = parseBooleanEnv(PUBLIC_ACCESS_RAW, true);
 const SESSION_SECRET = process.env.SESSION_SECRET || (isProduction ? null : "dev-only-local-session-secret");
 
 if (isProduction && !SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production.");
+}
+
+if (LEGACY_PUBLIC_ACCESS !== undefined && process.env.PUBLIC_ACCESS === undefined) {
+  console.warn(
+    "PUBLIC_ACCES is deprecated; rename it to PUBLIC_ACCESS in your environment settings."
+  );
 }
 
 app.set("trust proxy", 1);
