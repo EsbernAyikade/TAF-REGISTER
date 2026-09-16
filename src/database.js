@@ -126,6 +126,14 @@ function initializeDatabase() {
       FOREIGN KEY (role_id) REFERENCES roles(id)
     );
 
+    CREATE TABLE IF NOT EXISTS member_sub_ministries (
+      member_id INTEGER NOT NULL,
+      sub_ministry_id INTEGER NOT NULL,
+      PRIMARY KEY (member_id, sub_ministry_id),
+      FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE,
+      FOREIGN KEY (sub_ministry_id) REFERENCES sub_ministries(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       full_name TEXT NOT NULL,
@@ -186,10 +194,92 @@ function initializeDatabase() {
   }
 
   migrateMembersTableToRelaxedSchema();
+  repairAttendanceRecordsForeignKeyReference();
+  migrateLegacySubMinistryAssignments();
 
   seedReferenceData();
   seedInternalActor();
   seedSharedAccessPassword();
+}
+
+function repairAttendanceRecordsForeignKeyReference() {
+  const attendanceTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attendance_records'")
+    .get();
+
+  if (!attendanceTableExists) {
+    return;
+  }
+
+  const foreignKeys = db.prepare("PRAGMA foreign_key_list(attendance_records)").all();
+  const stillPointsToLegacyMemberTable = foreignKeys.some(
+    (entry) => entry.table === "members_legacy" || entry.table === "main.members_legacy"
+  );
+
+  if (!stillPointsToLegacyMemberTable) {
+    return;
+  }
+
+  db.exec("PRAGMA foreign_keys = OFF");
+
+  try {
+    const legacyRecordTable = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attendance_records_legacy'")
+      .get();
+    if (legacyRecordTable) {
+      db.exec("DROP TABLE attendance_records_legacy");
+    }
+
+    db.exec("ALTER TABLE attendance_records RENAME TO attendance_records_legacy");
+    db.exec(`
+      CREATE TABLE attendance_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        attendance_session_id INTEGER NOT NULL,
+        member_id INTEGER NOT NULL,
+        present INTEGER NOT NULL CHECK (present IN (0, 1)),
+        marked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (attendance_session_id) REFERENCES attendance_sessions(id) ON DELETE CASCADE,
+        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE,
+        UNIQUE (attendance_session_id, member_id)
+      );
+    `);
+    db.exec(`
+      INSERT INTO attendance_records (id, attendance_session_id, member_id, present, marked_at)
+      SELECT id, attendance_session_id, member_id, present, marked_at
+      FROM attendance_records_legacy
+    `);
+    db.exec("DROP TABLE attendance_records_legacy");
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+function migrateLegacySubMinistryAssignments() {
+  const tableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'member_sub_ministries'")
+    .get();
+
+  if (!tableExists) {
+    return;
+  }
+
+  const existingRows = db
+    .prepare("SELECT id, sub_ministry_id FROM members WHERE sub_ministry_id IS NOT NULL")
+    .all();
+
+  if (existingRows.length === 0) {
+    return;
+  }
+
+  const insertLink = db.prepare(
+    "INSERT OR IGNORE INTO member_sub_ministries (member_id, sub_ministry_id) VALUES (?, ?)"
+  );
+
+  db.transaction(() => {
+    existingRows.forEach(({ id, sub_ministry_id }) => {
+      insertLink.run(id, sub_ministry_id);
+    });
+  })();
 }
 
 // Earlier versions of this schema required gender, birth_day, birth_month,
@@ -202,25 +292,49 @@ function initializeDatabase() {
 // full table rebuild (rename -> recreate -> copy -> drop) is the standard
 // way to do this safely.
 function migrateMembersTableToRelaxedSchema() {
-  const tableExists = db
+  const membersTableExists = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'members'")
     .get();
-  if (!tableExists) {
+  const legacyTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'members_legacy'")
+    .get();
+
+  if (!membersTableExists && !legacyTableExists) {
     return;
   }
 
-  const columns = db.prepare("PRAGMA table_info(members)").all();
+  const sourceTable = membersTableExists ? "members" : "members_legacy";
+  const columns = db.prepare(`PRAGMA table_info(${sourceTable})`).all();
   const hasRoomNo = columns.some((column) => column.name === "room_no");
   const genderColumn = columns.find((column) => column.name === "gender");
   const needsRelaxedConstraints = genderColumn && genderColumn.notnull === 1;
 
-  if (hasRoomNo && !needsRelaxedConstraints) {
+  if (legacyTableExists && membersTableExists) {
+    db.exec("DROP TABLE members_legacy");
+  }
+
+  if (!membersTableExists && legacyTableExists) {
+    const legacyColumns = db.prepare("PRAGMA table_info(members_legacy)").all();
+    const legacyHasRoomNo = legacyColumns.some((column) => column.name === "room_no");
+    const legacyNeedsRelaxedConstraints =
+      legacyColumns.find((column) => column.name === "gender")?.notnull === 1;
+
+    if (!legacyNeedsRelaxedConstraints && legacyHasRoomNo) {
+      db.exec("ALTER TABLE members_legacy RENAME TO members");
+      return;
+    }
+  }
+
+  if (hasRoomNo && !needsRelaxedConstraints && !legacyTableExists) {
     return;
   }
 
   const migrate = db.transaction(() => {
-    if (needsRelaxedConstraints) {
-      db.exec("ALTER TABLE members RENAME TO members_legacy");
+    if (needsRelaxedConstraints || !membersTableExists) {
+      if (membersTableExists) {
+        db.exec("ALTER TABLE members RENAME TO members_legacy");
+      }
+
       db.exec(`
         CREATE TABLE members (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -251,21 +365,26 @@ function migrateMembersTableToRelaxedSchema() {
           FOREIGN KEY (role_id) REFERENCES roles(id)
         );
       `);
+
+      const sourceName = membersTableExists ? "members_legacy" : "members_legacy";
       db.exec(`
         INSERT INTO members (
-          id, full_name, gender, birth_day, birth_month, hostel, course_id,
+          id, full_name, gender, birth_day, birth_month, hostel, room_no, course_id,
           fellowship_id, sub_ministry_id, role_id, phone, email, level,
           status, approval_status, duplicate_flag, duplicate_notes,
           joined_at, approved_at, created_at, updated_at
         )
         SELECT
-          id, full_name, gender, birth_day, birth_month, hostel, course_id,
+          id, full_name, gender, birth_day, birth_month, hostel, room_no, course_id,
           fellowship_id, sub_ministry_id, role_id, phone, email, level,
           status, approval_status, duplicate_flag, duplicate_notes,
           joined_at, approved_at, created_at, updated_at
-        FROM members_legacy;
+        FROM ${sourceName};
       `);
-      db.exec("DROP TABLE members_legacy");
+
+      if (db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='members_legacy'").get()) {
+        db.exec("DROP TABLE members_legacy");
+      }
     } else if (!hasRoomNo) {
       db.exec("ALTER TABLE members ADD COLUMN room_no TEXT");
     }

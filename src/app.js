@@ -32,6 +32,7 @@ const app = express();
 const isProduction = process.env.NODE_ENV === "production";
 const HOST = process.env.HOST || "0.0.0.0";
 const PORT = Number(process.env.PORT || 3000);
+const PUBLIC_ACCESS = process.env.PUBLIC_ACCESS !== "false";
 const SESSION_SECRET = process.env.SESSION_SECRET || (isProduction ? null : "dev-only-local-session-secret");
 
 if (isProduction && !SESSION_SECRET) {
@@ -119,7 +120,11 @@ function getInternalActorId() {
 }
 
 app.use((req, res, next) => {
-  const user = req.session.isAuthenticated ? { actorId: getInternalActorId() } : null;
+  const user = PUBLIC_ACCESS
+    ? { actorId: getInternalActorId() }
+    : req.session.isAuthenticated
+      ? { actorId: getInternalActorId() }
+      : null;
 
   const fellowships = db
     .prepare("SELECT id, name, slug FROM fellowships ORDER BY name")
@@ -199,7 +204,7 @@ function setFlash(req, type, message) {
 }
 
 function requireAuth(req, res, next) {
-  if (!req.currentUser) {
+  if (!req.currentUser && !PUBLIC_ACCESS) {
     setFlash(req, "warning", "Please sign in to access the member database.");
     return res.redirect("/login");
   }
@@ -397,6 +402,12 @@ function parseCsvLine(line) {
 }
 
 function parseMemberPayload(body) {
+  const rawSubMinistryIds = Array.isArray(body.subMinistryIds)
+    ? body.subMinistryIds
+    : body.subMinistryIds
+      ? [body.subMinistryIds]
+      : [];
+
   return {
     fullName: String(body.fullName || "").trim(),
     gender: String(body.gender || "").trim(),
@@ -406,6 +417,10 @@ function parseMemberPayload(body) {
     roomNo: String(body.roomNo || "").trim(),
     courseId: body.courseId ? Number(body.courseId) : null,
     fellowshipId: Number(body.fellowshipId),
+    subMinistryIds: rawSubMinistryIds
+      .flatMap((value) => String(value).split(","))
+      .map((value) => Number(String(value).trim()))
+      .filter((value) => Number.isFinite(value) && value > 0),
     subMinistryId: body.subMinistryId ? Number(body.subMinistryId) : null,
     roleId: body.roleId ? Number(body.roleId) : null,
     phone: String(body.phone || "").trim(),
@@ -442,6 +457,46 @@ function validateMemberPayload(payload) {
   return null;
 }
 
+function getMemberSubMinistryIds(memberId) {
+  const ids = db
+    .prepare(
+      `
+        SELECT sub_ministry_id
+        FROM member_sub_ministries
+        WHERE member_id = ?
+        ORDER BY sub_ministry_id
+      `
+    )
+    .all(memberId)
+    .map((row) => Number(row.sub_ministry_id));
+
+  if (ids.length > 0) {
+    return ids;
+  }
+
+  const legacy = db
+    .prepare("SELECT sub_ministry_id FROM members WHERE id = ? AND sub_ministry_id IS NOT NULL")
+    .get(memberId);
+
+  return legacy && legacy.sub_ministry_id ? [Number(legacy.sub_ministry_id)] : [];
+}
+
+function setMemberSubMinistries(memberId, subMinistryIds) {
+  const normalizedIds = [...new Set(subMinistryIds.filter((id) => Number.isFinite(id) && id > 0))];
+
+  db.prepare("DELETE FROM member_sub_ministries WHERE member_id = ?").run(memberId);
+
+  if (normalizedIds.length > 0) {
+    const insertLink = db.prepare(
+      "INSERT INTO member_sub_ministries (member_id, sub_ministry_id) VALUES (?, ?)"
+    );
+    normalizedIds.forEach((subMinistryId) => insertLink.run(memberId, subMinistryId));
+  }
+
+  const primaryId = normalizedIds.length === 1 ? normalizedIds[0] : null;
+  db.prepare("UPDATE members SET sub_ministry_id = ? WHERE id = ?").run(primaryId, memberId);
+}
+
 function formatBirthdayForExport(birthDay, birthMonth) {
   return birthDay && birthMonth ? `${birthDay}/${birthMonth}` : "";
 }
@@ -453,6 +508,69 @@ function logAudit(userId, action, entityType, entityId, details) {
       VALUES (?, ?, ?, ?, ?)
     `
   ).run(userId || null, action, entityType, entityId || null, details || null);
+}
+
+function buildAttendanceInsights(attendanceHistory) {
+  const ordered = [...attendanceHistory].sort((a, b) => a.week_start.localeCompare(b.week_start));
+
+  if (ordered.length === 0) {
+    return {
+      longestAttendanceStreak: 0,
+      longestAbsenceStreak: 0,
+      firstWeek: null,
+      mostRecentWeek: null,
+      attendanceRate: 0,
+      monthGroups: [],
+    };
+  }
+
+  const monthGroups = new Map();
+  ordered.forEach((entry) => {
+    const monthKey = new Date(`${entry.week_start}T00:00:00Z`).toISOString().slice(0, 7);
+    const label = new Intl.DateTimeFormat("en-US", { month: "short", year: "numeric" }).format(
+      new Date(`${monthKey}-01T00:00:00Z`)
+    );
+    if (!monthGroups.has(monthKey)) {
+      monthGroups.set(monthKey, { label, entries: [] });
+    }
+    monthGroups.get(monthKey).entries.push(entry);
+  });
+
+  let currentAttendance = 0;
+  let bestAttendance = 0;
+  let currentAbsence = 0;
+  let bestAbsence = 0;
+
+  ordered.forEach((entry) => {
+    if (entry.present === 1) {
+      currentAttendance += 1;
+      currentAbsence = 0;
+      bestAttendance = Math.max(bestAttendance, currentAttendance);
+    } else if (entry.present === 0) {
+      currentAbsence += 1;
+      currentAttendance = 0;
+      bestAbsence = Math.max(bestAbsence, currentAbsence);
+    } else {
+      currentAttendance = 0;
+      currentAbsence = 0;
+    }
+  });
+
+  const totalWeeks = ordered.length;
+  const attendedWeeks = ordered.filter((entry) => entry.present === 1).length;
+  const attendanceRate = totalWeeks ? Math.round((attendedWeeks / totalWeeks) * 100) : 0;
+
+  return {
+    longestAttendanceStreak: bestAttendance,
+    longestAbsenceStreak: bestAbsence,
+    firstWeek: ordered[0].week_start,
+    mostRecentWeek: ordered[ordered.length - 1].week_start,
+    attendanceRate,
+    monthGroups: Array.from(monthGroups.values()).map((group) => ({
+      ...group,
+      entries: [...group.entries].sort((a, b) => a.week_start.localeCompare(b.week_start)),
+    })),
+  };
 }
 
 function buildMembersQuery(filters) {
@@ -473,7 +591,7 @@ function buildMembersQuery(filters) {
   }
 
   if (filters.subMinistryId) {
-    conditions.push("members.sub_ministry_id = ?");
+    conditions.push("EXISTS (SELECT 1 FROM member_sub_ministries WHERE member_sub_ministries.member_id = members.id AND member_sub_ministries.sub_ministry_id = ?)");
     params.push(filters.subMinistryId);
   }
 
@@ -517,13 +635,25 @@ function buildMembersQuery(filters) {
            courses.name AS course_name,
            fellowships.name AS fellowship_name,
            fellowships.slug AS fellowship_slug,
-           sub_ministries.name AS sub_ministry_name,
+           COALESCE(
+             (
+               SELECT GROUP_CONCAT(sub_ministries.name, ', ')
+               FROM member_sub_ministries
+               JOIN sub_ministries ON sub_ministries.id = member_sub_ministries.sub_ministry_id
+               WHERE member_sub_ministries.member_id = members.id
+               ORDER BY sub_ministries.name
+             ),
+             (
+               SELECT sub_ministries.name
+               FROM sub_ministries
+               WHERE sub_ministries.id = members.sub_ministry_id
+             )
+           ) AS sub_ministry_name,
            roles.display_name AS role_name,
            roles.role_type
     FROM members
     LEFT JOIN courses ON courses.id = members.course_id
     JOIN fellowships ON fellowships.id = members.fellowship_id
-    LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
     LEFT JOIN roles ON roles.id = members.role_id
     ${whereClause}
     ORDER BY members.full_name
@@ -540,13 +670,25 @@ function getMemberWithDetails(memberId) {
                courses.name AS course_name,
                fellowships.name AS fellowship_name,
                fellowships.slug AS fellowship_slug,
-               sub_ministries.name AS sub_ministry_name,
+               COALESCE(
+                 (
+                   SELECT GROUP_CONCAT(sub_ministries.name, ', ')
+                   FROM member_sub_ministries
+                   JOIN sub_ministries ON sub_ministries.id = member_sub_ministries.sub_ministry_id
+                   WHERE member_sub_ministries.member_id = members.id
+                   ORDER BY sub_ministries.name
+                 ),
+                 (
+                   SELECT sub_ministries.name
+                   FROM sub_ministries
+                   WHERE sub_ministries.id = members.sub_ministry_id
+                 )
+               ) AS sub_ministry_name,
                roles.display_name AS role_name,
                roles.role_type
         FROM members
         LEFT JOIN courses ON courses.id = members.course_id
         JOIN fellowships ON fellowships.id = members.fellowship_id
-        LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
         LEFT JOIN roles ON roles.id = members.role_id
         WHERE members.id = ?
       `
@@ -600,7 +742,7 @@ function getAttendanceSummaryForWeek(weekStart) {
 }
 
 app.get("/", (req, res) => {
-  return res.redirect(req.currentUser ? "/dashboard" : "/login");
+  return res.redirect(PUBLIC_ACCESS || req.currentUser ? "/dashboard" : "/login");
 });
 
 const BLANK_MEMBER = {
@@ -694,7 +836,7 @@ app.post("/members/new", requireAuth, (req, res) => {
       payload.roomNo || null,
       payload.courseId,
       payload.fellowshipId,
-      payload.subMinistryId,
+      payload.subMinistryIds.length === 1 ? payload.subMinistryIds[0] : null,
       payload.roleId,
       payload.phone || null,
       payload.email || null,
@@ -703,6 +845,10 @@ app.post("/members/new", requireAuth, (req, res) => {
       duplicates.length ? 1 : 0,
       duplicateNotes
     );
+
+  if (payload.subMinistryIds.length > 0) {
+    setMemberSubMinistries(result.lastInsertRowid, payload.subMinistryIds);
+  }
 
   logAudit(null, "member_added", "member", result.lastInsertRowid, duplicateNotes);
 
@@ -717,7 +863,7 @@ app.post("/members/new", requireAuth, (req, res) => {
 });
 
 app.get("/login", (req, res) => {
-  if (req.currentUser) {
+  if (req.currentUser && !PUBLIC_ACCESS) {
     return res.redirect("/dashboard");
   }
 
@@ -739,6 +885,13 @@ app.post("/login", loginLimiter, (req, res) => {
   logAudit(null, "login", "session", null, "Shared password login");
   setFlash(req, "success", "Welcome back.");
   return res.redirect("/dashboard");
+});
+
+app.get("/settings", requireAuth, (req, res) => {
+  res.render("pages/settings", {
+    pageTitle: "Settings",
+    csrfToken: res.locals.csrfToken,
+  });
 });
 
 app.get("/account/change-password", requireAuth, (req, res) => {
@@ -807,10 +960,26 @@ app.get("/dashboard", requireAuth, (req, res) => {
   const subMinistryStats = db
     .prepare(
       `
-        SELECT COALESCE(sub_ministries.name, 'None') AS name, COUNT(*) AS count
-        FROM members
-        LEFT JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
-        ${memberVisibilityCondition}
+        WITH member_sub_ministry_counts AS (
+          SELECT member_sub_ministries.sub_ministry_id, COUNT(*) AS count
+          FROM member_sub_ministries
+          JOIN members ON members.id = member_sub_ministries.member_id
+          ${memberVisibilityCondition.replace('WHERE 1 = 1', 'WHERE 1 = 1')}
+          GROUP BY member_sub_ministries.sub_ministry_id
+
+          UNION ALL
+
+          SELECT members.sub_ministry_id AS sub_ministry_id, COUNT(*) AS count
+          FROM members
+          WHERE members.sub_ministry_id IS NOT NULL
+            AND NOT EXISTS (
+              SELECT 1 FROM member_sub_ministries WHERE member_sub_ministries.member_id = members.id
+            )
+          GROUP BY members.sub_ministry_id
+        )
+        SELECT COALESCE(sub_ministries.name, 'None') AS name, SUM(member_sub_ministry_counts.count) AS count
+        FROM member_sub_ministry_counts
+        LEFT JOIN sub_ministries ON sub_ministries.id = member_sub_ministry_counts.sub_ministry_id
         GROUP BY COALESCE(sub_ministries.name, 'None')
         ORDER BY count DESC, name
       `
@@ -918,14 +1087,80 @@ function findExistingMemberInFellowship(fellowshipId, fullName, phone) {
 }
 
 function parseDayMonth(value) {
+  if (value instanceof Date) {
+    return {
+      day: value.getUTCDate(),
+      month: value.getUTCMonth() + 1,
+    };
+  }
+
   const text = String(value || "").trim();
-  const match = text.match(/^(\d{1,2})[/.\-](\d{1,2})/);
+  if (!text) {
+    return { day: null, month: null };
+  }
+
+  const isoMatch = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  if (isoMatch) {
+    const day = Number(isoMatch[3]);
+    const month = Number(isoMatch[2]);
+    return isValidBirthDate(day, month) ? { day, month } : { day: null, month: null };
+  }
+
+  const match = text.match(/^(\d{1,2})[/.-](\d{1,2})(?:[/.-](\d{2,4}))?/);
   if (!match) {
     return { day: null, month: null };
   }
+
   const day = Number(match[1]);
   const month = Number(match[2]);
   return isValidBirthDate(day, month) ? { day, month } : { day: null, month: null };
+}
+
+function isExcelUpload(file) {
+  if (!file) {
+    return false;
+  }
+
+  const originalName = String(file.originalname || "");
+  const mimeType = String(file.mimetype || "").toLowerCase();
+  return /\.(xlsx|xls|xlsm)$/i.test(originalName) || mimeType.includes("excel") || mimeType.includes("spreadsheet");
+}
+
+function normalizeWorkbookCell(value) {
+  if (value === null || value === undefined) {
+    return "";
+  }
+
+  if (typeof value === "number") {
+    return Number.isInteger(value) ? String(value) : String(value).replace(/\.0+$/, "");
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString().slice(0, 10);
+  }
+
+  return String(value).trim();
+}
+
+function parseWeekNumberFromLabel(value) {
+  const cleaned = normalizeWorkbookCell(value)
+    .replace(/[\uFEFF]/g, "")
+    .replace(/\s+/g, "")
+    .toUpperCase();
+
+  if (!cleaned) {
+    return null;
+  }
+
+  const match = cleaned.match(/^(?:W(?:EEK)?|WK)?(\d+)(?:\.0+)?$/) || cleaned.match(/^(\d+)(?:\.0+)?$/);
+  return match ? Number(match[1] || match[0]) : null;
+}
+
+function normalizeHeaderKey(value) {
+  return normalizeWorkbookCell(value)
+    .replace(/[\uFEFF]/g, "")
+    .replace(/[^A-Z0-9]+/gi, "")
+    .toUpperCase();
 }
 
 function levelFromYear(value) {
@@ -945,7 +1180,9 @@ function levelFromYear(value) {
 async function parseAttendanceRegisterWorkbook(buffer) {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
-  const sheet = workbook.worksheets[0];
+
+  const sheet =
+    workbook.worksheets.find((candidate) => candidate && candidate.rowCount > 0) || workbook.worksheets[0];
   if (!sheet) {
     throw new Error("The workbook has no sheets.");
   }
@@ -954,25 +1191,58 @@ async function parseAttendanceRegisterWorkbook(buffer) {
   const weekColumns = [];
   let headerRowNumber = null;
 
-  for (let rowNumber = 1; rowNumber <= Math.min(sheet.rowCount, 5); rowNumber += 1) {
+  for (let rowNumber = 1; rowNumber <= Math.min(sheet.rowCount, 20); rowNumber += 1) {
     const row = sheet.getRow(rowNumber);
     const cellTexts = [];
     row.eachCell({ includeEmpty: true }, (cell, colNumber) => {
-      cellTexts[colNumber] = String(cell.value || "").trim();
+      cellTexts[colNumber] = normalizeWorkbookCell(cell.value);
     });
-    if (cellTexts.some((text) => text && text.toUpperCase() === "NAME")) {
+
+    const normalizedHeaders = cellTexts
+      .filter((text) => text)
+      .map((text) => normalizeHeaderKey(text));
+
+    const headerText = normalizedHeaders.join(" ");
+    const hasNameHeader = normalizedHeaders.some((header) =>
+      ["NAME", "FULLNAME", "MEMBERNAME", "MEMBERSNAME", "NAMEOFMEMBER", "FULLNAMES"].includes(header)
+    );
+
+    if (headerText && hasNameHeader) {
       headerRowNumber = rowNumber;
       cellTexts.forEach((text, colNumber) => {
         if (!text) return;
-        const normalized = text.toUpperCase();
-        if (normalized === "NAME") columns.name = colNumber;
-        else if (normalized === "NUMBER" || normalized === "PHONE") columns.phone = colNumber;
-        else if (normalized === "HOSTEL") columns.hostel = colNumber;
-        else if (normalized.startsWith("ROOM")) columns.roomNo = colNumber;
-        else if (normalized === "BIRTHDAY") columns.birthday = colNumber;
-        else if (normalized.startsWith("SUBMIN") || normalized.includes("MINISTRY")) columns.subMinistry = colNumber;
-        else if (normalized === "YEAR" || normalized === "LEVEL") columns.year = colNumber;
-        else if (/^\d+$/.test(text)) weekColumns.push({ column: colNumber, weekNumber: Number(text) });
+        const normalized = normalizeHeaderKey(text);
+
+        if (["NAME", "FULLNAME", "MEMBERNAME", "MEMBERSNAME", "NAMEOFMEMBER", "FULLNAMES"].includes(normalized)) {
+          columns.name = colNumber;
+        } else if (["PHONE", "PHONENUMBER", "MOBILENUMBER", "MOBILE", "NUMBER", "CONTACTNUMBER", "TEL"].includes(normalized)) {
+          columns.phone = colNumber;
+        } else if (["GENDER", "SEX"].includes(normalized)) {
+          columns.gender = colNumber;
+        } else if (["COURSE", "COURSEOFSTUDY", "PROGRAM", "PROGRAMME"].includes(normalized)) {
+          columns.course = colNumber;
+        } else if (["EMAIL", "EMAILADDRESS"].includes(normalized)) {
+          columns.email = colNumber;
+        } else if (normalized === "HOSTEL") {
+          columns.hostel = colNumber;
+        } else if (normalized.startsWith("ROOM") || normalized === "ROOMNO" || normalized === "ROOMNUMBER") {
+          columns.roomNo = colNumber;
+        } else if (["BIRTHDAY", "DATEOFBIRTH", "DOB"].includes(normalized)) {
+          columns.birthday = colNumber;
+        } else if (
+          normalized.startsWith("SUBMIN") ||
+          normalized.includes("MINISTRY") ||
+          normalized === "MINISTRY"
+        ) {
+          columns.subMinistry = colNumber;
+        } else if (["YEAR", "LEVEL", "ACADEMICYEAR", "STUDYYEAR"].includes(normalized)) {
+          columns.year = colNumber;
+        } else {
+          const weekNumber = parseWeekNumberFromLabel(text);
+          if (weekNumber) {
+            weekColumns.push({ column: colNumber, weekNumber });
+          }
+        }
       });
       break;
     }
@@ -985,24 +1255,28 @@ async function parseAttendanceRegisterWorkbook(buffer) {
   const dataRows = [];
   for (let rowNumber = headerRowNumber + 1; rowNumber <= sheet.rowCount; rowNumber += 1) {
     const row = sheet.getRow(rowNumber);
-    const name = String(row.getCell(columns.name).value || "").trim();
+    const name = normalizeWorkbookCell(row.getCell(columns.name).value);
     if (!name) continue;
 
     const weeks = {};
     weekColumns.forEach(({ column, weekNumber }) => {
       const raw = row.getCell(column).value;
-      weeks[weekNumber] = raw !== null && raw !== undefined && String(raw).trim() !== "";
+      const value = normalizeWorkbookCell(raw);
+      weeks[weekNumber] = value !== "" && value !== null && value !== undefined;
     });
 
     dataRows.push({
       rowNumber,
       name,
-      phone: columns.phone ? String(row.getCell(columns.phone).value || "").trim() : "",
-      hostel: columns.hostel ? String(row.getCell(columns.hostel).value || "").trim() : "",
-      roomNo: columns.roomNo ? String(row.getCell(columns.roomNo).value || "").trim() : "",
+      gender: columns.gender ? normalizeWorkbookCell(row.getCell(columns.gender).value) : "",
+      phone: columns.phone ? normalizeWorkbookCell(row.getCell(columns.phone).value) : "",
+      email: columns.email ? normalizeWorkbookCell(row.getCell(columns.email).value) : "",
+      hostel: columns.hostel ? normalizeWorkbookCell(row.getCell(columns.hostel).value) : "",
+      roomNo: columns.roomNo ? normalizeWorkbookCell(row.getCell(columns.roomNo).value) : "",
       birthday: columns.birthday ? row.getCell(columns.birthday).value : null,
-      subMinistry: columns.subMinistry ? String(row.getCell(columns.subMinistry).value || "").trim() : "",
+      subMinistry: columns.subMinistry ? normalizeWorkbookCell(row.getCell(columns.subMinistry).value) : "",
       year: columns.year ? row.getCell(columns.year).value : null,
+      course: columns.course ? normalizeWorkbookCell(row.getCell(columns.course).value) : "",
       weeks,
     });
   }
@@ -1029,15 +1303,15 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
     return res.redirect("/members/import");
   }
 
-  const isExcel = /\.xlsx$/i.test(req.file.originalname || "");
+  const isExcel = isExcelUpload(req.file);
 
   // --- Path 1: a fellowship attendance register (.xlsx), with weekly marks ---
   if (isExcel) {
     const fellowshipId = Number(req.body.fellowshipId || 0);
     const weekOneStartInput = String(req.body.weekOneStart || "").trim();
 
-    if (!fellowshipId || !weekOneStartInput) {
-      setFlash(req, "error", "Please choose a Love Fellowship and the date of Week 1 before uploading a register.");
+    if (!fellowshipId) {
+      setFlash(req, "error", "Please choose a Love Fellowship before uploading a register or member list.");
       return res.redirect("/members/import");
     }
 
@@ -1046,6 +1320,164 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
       parsed = await parseAttendanceRegisterWorkbook(req.file.buffer);
     } catch (error) {
       setFlash(req, "error", `Could not read that file: ${error.message}`);
+      return res.redirect("/members/import");
+    }
+
+    if (parsed.activeWeekNumbers.length === 0) {
+      const inserted = [];
+      const flaggedDuplicates = [];
+      const skipped = [];
+
+      parsed.dataRows.forEach((row) => {
+        const fullName = String(row.name || "").trim();
+        if (!fullName) {
+          return;
+        }
+
+        const { day, month } = parseDayMonth(row.birthday);
+        const level = levelFromYear(row.year);
+        const subMinistryNames = row.subMinistry
+          ? String(row.subMinistry)
+              .split(/[;,/]/)
+              .map((value) => value.trim())
+              .filter(Boolean)
+          : [];
+        const subMinistryIds = subMinistryNames
+          .map((name) => db.prepare("SELECT id FROM sub_ministries WHERE LOWER(name) = LOWER(?)").get(name))
+          .filter(Boolean)
+          .map((rowEntry) => rowEntry.id);
+
+        const memberPayload = {
+          fullName,
+          gender: String(row.gender || "").trim(),
+          birthDay: day,
+          birthMonth: month,
+          hostel: row.hostel || "",
+          courseId: null,
+          fellowshipId,
+          subMinistryIds,
+          roleId: null,
+          phone: row.phone || "",
+          email: row.email || "",
+          level,
+          status: "Active",
+        };
+
+        const validationError = validateMemberPayload(memberPayload);
+        if (validationError) {
+          skipped.push({ line: row.rowNumber, name: fullName, reason: validationError });
+          return;
+        }
+
+        const duplicates = detectDuplicateMembers(memberPayload);
+        const existingMember = findExistingMemberInFellowship(fellowshipId, fullName, row.phone || "");
+
+        if (existingMember) {
+          db.prepare(
+            `
+              UPDATE members SET
+                full_name = ?,
+                gender = COALESCE(NULLIF(?, ''), gender),
+                birth_day = COALESCE(birth_day, ?),
+                birth_month = COALESCE(birth_month, ?),
+                hostel = COALESCE(NULLIF(hostel, ''), ?),
+                room_no = COALESCE(NULLIF(room_no, ''), ?),
+                course_id = COALESCE(course_id, ?),
+                phone = COALESCE(NULLIF(phone, ''), ?),
+                email = COALESCE(NULLIF(email, ''), ?),
+                level = COALESCE(NULLIF(level, ''), ?),
+                status = COALESCE(NULLIF(status, ''), 'Active'),
+                updated_at = CURRENT_TIMESTAMP
+              WHERE id = ?
+            `
+          ).run(
+            fullName,
+            memberPayload.gender || null,
+            day,
+            month,
+            row.hostel || null,
+            row.roomNo || null,
+            null,
+            row.phone || null,
+            row.email || null,
+            level || null,
+            existingMember.id
+          );
+          if (subMinistryIds.length > 0) {
+            setMemberSubMinistries(existingMember.id, subMinistryIds);
+          }
+          if (duplicates.length) {
+            flaggedDuplicates.push(fullName);
+          } else {
+            inserted.push(fullName);
+          }
+          return;
+        }
+
+        const result = db
+          .prepare(
+            `
+              INSERT INTO members (
+                full_name, gender, birth_day, birth_month, hostel, room_no,
+                course_id, fellowship_id, sub_ministry_id, phone, email, level,
+                status, approval_status, duplicate_flag, duplicate_notes
+              )
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Active', 'approved', ?, ?)
+            `
+          )
+          .run(
+            fullName,
+            memberPayload.gender || null,
+            day,
+            month,
+            row.hostel || null,
+            row.roomNo || null,
+            null,
+            fellowshipId,
+            subMinistryIds.length === 1 ? subMinistryIds[0] : null,
+            row.phone || null,
+            row.email || null,
+            level || null,
+            duplicates.length ? 1 : 0,
+            duplicates.length ? duplicates.map((duplicate) => duplicate.full_name).join("; ") : null
+          );
+
+        if (subMinistryIds.length > 0) {
+          setMemberSubMinistries(result.lastInsertRowid, subMinistryIds);
+        }
+
+        if (duplicates.length) {
+          flaggedDuplicates.push(fullName);
+        } else {
+          inserted.push(fullName);
+        }
+      });
+
+      const totalProcessed = inserted.length + flaggedDuplicates.length;
+      logAudit(null, "members_imported", "member", null, `${totalProcessed} imported, ${skipped.length} skipped`);
+      setFlash(
+        req,
+        skipped.length > 0 ? "warning" : "success",
+        `Member list imported: ${totalProcessed} record(s) added, ${skipped.length} skipped.`
+      );
+
+      return res.render("pages/import-members", {
+        pageTitle: "Bulk Import",
+        csrfToken: res.locals.csrfToken,
+        results: {
+          type: "register",
+          membersCreated: inserted.length,
+          membersMatched: flaggedDuplicates.length,
+          weeksImported: 0,
+          attendanceMarksRecorded: 0,
+          skipped,
+          attendanceNote: "Member details only — no attendance columns found in this file.",
+        },
+      });
+    }
+
+    if (!weekOneStartInput) {
+      setFlash(req, "error", "Please choose the date of Week 1 before uploading a weekly attendance register.");
       return res.redirect("/members/import");
     }
 
@@ -1085,16 +1517,20 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
     parsed.dataRows.forEach((row) => {
       const { day, month } = parseDayMonth(row.birthday);
       const level = levelFromYear(row.year);
-      const subMinistry = row.subMinistry
-        ? db.prepare("SELECT id FROM sub_ministries WHERE LOWER(name) = LOWER(?)").get(row.subMinistry)
-        : null;
+      const subMinistryNames = row.subMinistry
+        ? String(row.subMinistry)
+            .split(/[;,/]/)
+            .map((value) => value.trim())
+            .filter(Boolean)
+        : [];
+      const subMinistryIds = subMinistryNames
+        .map((name) => db.prepare("SELECT id FROM sub_ministries WHERE LOWER(name) = LOWER(?)").get(name))
+        .filter(Boolean)
+        .map((rowEntry) => rowEntry.id);
 
       let member = findExistingMemberInFellowship(fellowshipId, row.name, row.phone);
 
       if (member) {
-        // Fill in gaps on the existing record without overwriting anything
-        // already on file — the register may have less detail than what an
-        // admin has already entered by hand.
         db.prepare(
           `
             UPDATE members SET
@@ -1108,6 +1544,9 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
             WHERE id = ?
           `
         ).run(row.hostel || null, row.roomNo || null, day, month, level || null, row.phone || null, member.id);
+        if (subMinistryIds.length > 0) {
+          setMemberSubMinistries(member.id, subMinistryIds);
+        }
         membersMatched += 1;
       } else {
         const result = db
@@ -1127,11 +1566,14 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
             day,
             month,
             level || null,
-            subMinistry ? subMinistry.id : null,
+            subMinistryIds.length === 1 ? subMinistryIds[0] : null,
             fellowshipId,
             row.phone || null
           );
         member = { id: result.lastInsertRowid };
+        if (subMinistryIds.length > 0) {
+          setMemberSubMinistries(member.id, subMinistryIds);
+        }
         membersCreated += 1;
       }
 
@@ -1308,8 +1750,7 @@ app.get("/members/:id", requireAuth, (req, res) => {
           ON attendance_records.attendance_session_id = attendance_sessions.id
          AND attendance_records.member_id = ?
         WHERE attendance_sessions.fellowship_id = ?
-        ORDER BY attendance_sessions.week_start DESC
-        LIMIT 12
+        ORDER BY attendance_sessions.week_start ASC
       `
     )
     .all(member.id, member.fellowship_id);
@@ -1318,6 +1759,8 @@ app.get("/members/:id", requireAuth, (req, res) => {
     ? Math.round((attendanceStats.attended_weeks / attendanceStats.total_weeks) * 100)
     : 0;
 
+  const attendanceInsights = buildAttendanceInsights(attendanceHistory);
+
   res.render("pages/member-detail", {
     pageTitle: member.full_name,
     member,
@@ -1325,8 +1768,14 @@ app.get("/members/:id", requireAuth, (req, res) => {
       ...attendanceStats,
       missed_weeks: attendanceStats.total_weeks - attendanceStats.attended_weeks,
       rate,
+      longest_attendance_streak: attendanceInsights.longestAttendanceStreak,
+      longest_absence_streak: attendanceInsights.longestAbsenceStreak,
+      first_week: attendanceInsights.firstWeek,
+      most_recent_week: attendanceInsights.mostRecentWeek,
+      attendance_rate: attendanceInsights.attendanceRate,
     },
     attendanceHistory,
+    attendanceGroups: attendanceInsights.monthGroups,
     canManage: canManageMember(req.currentUser, member),
     weekLabel: getWeekLabel,
   });
@@ -1410,7 +1859,7 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
     payload.roomNo || null,
     payload.courseId,
     payload.fellowshipId,
-    payload.subMinistryId,
+    payload.subMinistryIds.length === 1 ? payload.subMinistryIds[0] : null,
     payload.roleId,
     payload.phone || null,
     payload.email || null,
@@ -1420,6 +1869,8 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
     duplicateNotes,
     existingMember.id
   );
+
+  setMemberSubMinistries(existingMember.id, payload.subMinistryIds);
 
   logAudit(
     null,
@@ -1495,17 +1946,44 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
     reps: members.filter((member) => member.role_type === "Rep"),
   };
 
+  const fellowshipSubMinistryRows = db
+    .prepare(
+      `
+        SELECT sub_ministries.name, COUNT(*) AS count
+        FROM member_sub_ministries
+        JOIN sub_ministries ON sub_ministries.id = member_sub_ministries.sub_ministry_id
+        JOIN members ON members.id = member_sub_ministries.member_id
+        WHERE members.fellowship_id = ?
+        GROUP BY sub_ministries.id, sub_ministries.name
+
+        UNION ALL
+
+        SELECT sub_ministries.name, COUNT(*) AS count
+        FROM members
+        JOIN sub_ministries ON sub_ministries.id = members.sub_ministry_id
+        WHERE members.fellowship_id = ?
+          AND members.sub_ministry_id IS NOT NULL
+          AND NOT EXISTS (
+            SELECT 1 FROM member_sub_ministries WHERE member_sub_ministries.member_id = members.id
+          )
+        GROUP BY sub_ministries.id, sub_ministries.name
+      `
+    )
+    .all(fellowship.id, fellowship.id);
+
+  const subMinistryCounts = new Map(
+    fellowshipSubMinistryRows.map((row) => [row.name, Number(row.count)])
+  );
+
   const stats = {
     totalMembers: members.length,
     maleMembers: members.filter((member) => member.gender === "Male").length,
     femaleMembers: members.filter((member) => member.gender === "Female").length,
     unspecifiedGenderMembers: members.filter((member) => member.gender !== "Male" && member.gender !== "Female").length,
-    choirMembers: members.filter(
-      (member) => member.sub_ministry_name === "Aloud Choir"
-    ).length,
-    creativeMembers: members.filter(
-      (member) => member.sub_ministry_name === "Aloud Creative"
-    ).length,
+    choirMembers: subMinistryCounts.get("Aloud Choir") || 0,
+    creativeMembers: subMinistryCounts.get("Aloud Creative") || 0,
+    eyeMembers: subMinistryCounts.get("The Eye") || 0,
+    taf01Members: subMinistryCounts.get("TAF 01") || 0,
   };
 
   const currentWeekStart = getWeekStart();

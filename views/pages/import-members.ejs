@@ -44,7 +44,8 @@
         </label>
         <label>
           <span>Date of Week 1</span>
-          <input type="date" name="weekOneStart" required />
+          <input type="date" name="weekOneStart" />
+          <small>Only needed if this file includes weekly attendance columns.</small>
         </label>
       </div>
       <label>
@@ -85,6 +86,9 @@
             <h2>Register Import Results</h2>
           </div>
         </div>
+        <% if (results.attendanceNote) { %>
+          <p class="muted"><%= results.attendanceNote %></p>
+        <% } %>
         <div class="stats-grid">
           <article class="stat-card accent-green">
             <span>New Members</span>

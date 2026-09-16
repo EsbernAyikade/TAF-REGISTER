@@ -7,9 +7,42 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Fraunces:wght@600;700;800&family=Manrope:wght@400;500;600;700;800&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="/css/styles.css" />
+    <script>
+      // Apply the saved appearance settings on EVERY page, before first
+      // paint. Previously this ran only inside settings.ejs, so dark mode
+      // and compact density visibly applied on /settings and nowhere else.
+      // Running it here (and before <body> renders) also avoids the
+      // flash-of-light-theme you'd get from applying it after load.
+      (function () {
+        try {
+          var root = document.documentElement;
+          if (localStorage.getItem('taf-dark-mode') === 'true') {
+            root.setAttribute('data-preload-theme', 'dark');
+          }
+          if (localStorage.getItem('taf-compact-mode') === 'true') {
+            root.setAttribute('data-preload-density', 'compact');
+          }
+        } catch (error) {
+          /* localStorage unavailable (private mode) — fall back to defaults */
+        }
+      })();
+    </script>
   </head>
   <body class="<%= typeof bodyClass !== 'undefined' && bodyClass ? bodyClass : '' %>">
+    <script>
+      // Transfer the pre-paint flags from <html> onto <body>, which is what
+      // the stylesheet's .theme-dark / .density-compact rules target.
+      (function () {
+        var root = document.documentElement;
+        if (root.getAttribute('data-preload-theme') === 'dark') {
+          document.body.classList.add('theme-dark');
+        }
+        if (root.getAttribute('data-preload-density') === 'compact') {
+          document.body.classList.add('density-compact');
+        }
+      })();
+    </script>
