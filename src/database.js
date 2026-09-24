@@ -230,6 +230,7 @@ function initializeDatabase() {
   migrateMembersTableToRelaxedSchema();
   repairAttendanceRecordsForeignKeyReference();
   repairMemberSubMinistriesForeignKeyReference();
+  repairMemberFellowshipTransfersForeignKeyReference();
   migrateLegacySubMinistryAssignments();
 
   seedReferenceData();
@@ -333,6 +334,61 @@ function repairMemberSubMinistriesForeignKeyReference() {
       FROM member_sub_ministries_legacy
     `);
     db.exec("DROP TABLE member_sub_ministries_legacy");
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+function repairMemberFellowshipTransfersForeignKeyReference() {
+  const transfersTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'member_fellowship_transfers'")
+    .get();
+
+  if (!transfersTableExists) {
+    return;
+  }
+
+  const foreignKeys = db.prepare("PRAGMA foreign_key_list(member_fellowship_transfers)").all();
+  const stillPointsToLegacyMemberTable = foreignKeys.some(
+    (entry) => entry.table === "members_legacy" || entry.table === "main.members_legacy"
+  );
+
+  if (!stillPointsToLegacyMemberTable) {
+    return;
+  }
+
+  db.exec("PRAGMA foreign_keys = OFF");
+
+  try {
+    const legacyTransferTable = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'member_fellowship_transfers_legacy'")
+      .get();
+    if (legacyTransferTable) {
+      db.exec("DROP TABLE member_fellowship_transfers_legacy");
+    }
+
+    db.exec("ALTER TABLE member_fellowship_transfers RENAME TO member_fellowship_transfers_legacy");
+    db.exec(`
+      CREATE TABLE member_fellowship_transfers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        member_id INTEGER NOT NULL,
+        from_fellowship_id INTEGER,
+        to_fellowship_id INTEGER,
+        transferred_by_user_id INTEGER,
+        notes TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE,
+        FOREIGN KEY (from_fellowship_id) REFERENCES fellowships(id),
+        FOREIGN KEY (to_fellowship_id) REFERENCES fellowships(id),
+        FOREIGN KEY (transferred_by_user_id) REFERENCES users(id)
+      );
+    `);
+    db.exec(`
+      INSERT INTO member_fellowship_transfers (id, member_id, from_fellowship_id, to_fellowship_id, transferred_by_user_id, notes, created_at)
+      SELECT id, member_id, from_fellowship_id, to_fellowship_id, transferred_by_user_id, notes, created_at
+      FROM member_fellowship_transfers_legacy
+    `);
+    db.exec("DROP TABLE member_fellowship_transfers_legacy");
   } finally {
     db.exec("PRAGMA foreign_keys = ON");
   }
