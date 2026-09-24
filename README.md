@@ -55,12 +55,9 @@ This project is prepared for deployment on Render with a persistent disk and a s
    - `NODE_ENV=production`
    - `SESSION_SECRET=<a-long-random-secret>`
    - `SHARED_ACCESS_PASSWORD=<strong-shared-password>`
-   - `PUBLIC_ACCESS=false` (set `true` only if you intentionally want the app open without login)
    - `DATABASE_PATH=/var/data/teens-aloud.db`
    - `DATA_DIR=/var/data`
 5. Deploy.
-
-> Important: use `PUBLIC_ACCESS` (with two "S" letters). A common typo is `PUBLIC_ACCES`, which may leave the app publicly accessible.
 
 The Render blueprint in this repo is configured to mount the database disk at `/var/data` and back up the SQLite file in a daily cron job. The app refuses to start in production if `SESSION_SECRET` is missing, or if neither `SHARED_ACCESS_PASSWORD` nor the legacy `SUPER_ADMIN_PASSWORD` is set.
 

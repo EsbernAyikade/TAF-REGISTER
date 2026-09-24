@@ -143,25 +143,25 @@ function getInternalActorId() {
     throw new Error("No internal actor is available for shared-access actions.");
   }
 
-  function getDaysSince(value) {
-    if (!value) {
-      return Number.POSITIVE_INFINITY;
-    }
-
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) {
-      return Number.POSITIVE_INFINITY;
-    }
-
-    return Math.floor((Date.now() - parsed.getTime()) / (1000 * 60 * 60 * 24));
-  }
-
-  function isNewMember(joinedAt) {
-    const days = getDaysSince(joinedAt);
-    return Number.isFinite(days) && days >= 0 && days <= NEW_MEMBER_WINDOW_DAYS;
-  }
-
   return actor.id;
+}
+
+function getDaysSince(value) {
+  if (!value) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  return Math.floor((Date.now() - parsed.getTime()) / (1000 * 60 * 60 * 24));
+}
+
+function isNewMember(joinedAt) {
+  const days = getDaysSince(joinedAt);
+  return Number.isFinite(days) && days >= 0 && days <= NEW_MEMBER_WINDOW_DAYS;
 }
 
 app.use((req, res, next) => {
@@ -2088,22 +2088,14 @@ app.get("/members/:id", requireAuth, (req, res) => {
           attendance_sessions.week_start,
           attendance_sessions.week_end,
           attendance_records.present
-        FROM attendance_sessions
-        LEFT JOIN attendance_records
-          ON attendance_records.attendance_session_id = attendance_sessions.id
-         AND attendance_records.member_id = ?
+        FROM attendance_records
+        JOIN attendance_sessions ON attendance_sessions.id = attendance_records.attendance_session_id
         LEFT JOIN fellowships ON fellowships.id = attendance_sessions.fellowship_id
-        WHERE attendance_sessions.fellowship_id IN (
-          SELECT DISTINCT COALESCE(to_fellowship_id, from_fellowship_id)
-          FROM member_fellowship_transfers
-          WHERE member_id = ?
-          UNION
-          SELECT COALESCE(?, attendance_sessions.fellowship_id)
-        )
-        ORDER BY fellowship_name, attendance_sessions.week_start ASC
+        WHERE attendance_records.member_id = ?
+        ORDER BY attendance_sessions.week_start ASC, fellowship_name
       `
     )
-    .all(member.id, member.id, member.fellowship_id);
+    .all(member.id);
 
   const rate = attendanceStats.total_weeks
     ? Math.round((attendanceStats.attended_weeks / attendanceStats.total_weeks) * 100)
@@ -2144,68 +2136,6 @@ app.get("/members/:id/edit", requireAuth, (req, res) => {
       currentPath: req.path,
       csrfToken: res.locals.csrfToken || "",
     });
-
-    app.post("/members/:id/merge", requireAuth, (req, res) => {
-      const winnerId = Number(req.params.id);
-      const loserId = Number(req.body.duplicateMemberId);
-      if (!Number.isFinite(loserId) || loserId <= 0 || loserId === winnerId) {
-        setFlash(req, "error", "Select a valid duplicate record to merge.");
-        return res.redirect(`/members/${winnerId}`);
-      }
-
-      const winner = getMemberWithDetails(winnerId);
-      const loser = getMemberWithDetails(loserId);
-      if (!winner || !loser) {
-        setFlash(req, "error", "One of the selected records could not be found.");
-        return res.redirect(`/members/${winnerId}`);
-      }
-
-      db.transaction(() => {
-        const sessions = db
-          .prepare(
-            `
-              SELECT attendance_records.attendance_session_id, attendance_records.present
-              FROM attendance_records
-              WHERE attendance_records.member_id = ?
-            `
-          )
-          .all(loserId);
-
-        const upsert = db.prepare(
-          `
-            INSERT INTO attendance_records (attendance_session_id, member_id, present)
-            VALUES (?, ?, ?)
-            ON CONFLICT(attendance_session_id, member_id)
-            DO UPDATE SET
-              present = MAX(attendance_records.present, excluded.present),
-              marked_at = CURRENT_TIMESTAMP
-          `
-        );
-        sessions.forEach((row) => upsert.run(row.attendance_session_id, winnerId, row.present));
-
-        db.prepare("DELETE FROM member_sub_ministries WHERE member_id = ?").run(loserId);
-        db.prepare("DELETE FROM attendance_records WHERE member_id = ?").run(loserId);
-        db.prepare("DELETE FROM member_fellowship_transfers WHERE member_id = ?").run(loserId);
-        db.prepare("DELETE FROM members WHERE id = ?").run(loserId);
-
-        const refreshedDuplicates = detectDuplicateMembers({
-          fullName: winner.full_name,
-          email: winner.email,
-          phone: winner.phone,
-          memberId: winnerId,
-        });
-        const duplicateNotes = refreshedDuplicates.length
-          ? refreshedDuplicates.map((item) => `${item.full_name} (${item.email}, ${item.phone})`).join("; ")
-          : null;
-        db.prepare(
-          "UPDATE members SET duplicate_flag = ?, duplicate_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-        ).run(refreshedDuplicates.length ? 1 : 0, duplicateNotes, winnerId);
-      })();
-
-      logAudit(null, "member_merged", "member", winnerId, `Merged ${loser.full_name} (${loserId}) into ${winner.full_name} (${winnerId})`);
-      setFlash(req, "success", `Merged ${loser.full_name} into ${winner.full_name}. Attendance history was preserved.`);
-      return res.redirect(`/members/${winnerId}`);
-    });
   }
 
   if (!canManageMember(req.currentUser, member)) {
@@ -2223,6 +2153,68 @@ app.get("/members/:id/edit", requireAuth, (req, res) => {
   });
 });
 
+app.post("/members/:id/merge", requireAuth, (req, res) => {
+  const winnerId = Number(req.params.id);
+  const loserId = Number(req.body.duplicateMemberId);
+  if (!Number.isFinite(loserId) || loserId <= 0 || loserId === winnerId) {
+    setFlash(req, "error", "Select a valid duplicate record to merge.");
+    return res.redirect(`/members/${winnerId}`);
+  }
+
+  const winner = getMemberWithDetails(winnerId);
+  const loser = getMemberWithDetails(loserId);
+  if (!winner || !loser) {
+    setFlash(req, "error", "One of the selected records could not be found.");
+    return res.redirect(`/members/${winnerId}`);
+  }
+
+  db.transaction(() => {
+    const sessions = db
+      .prepare(
+        `
+          SELECT attendance_records.attendance_session_id, attendance_records.present
+          FROM attendance_records
+          WHERE attendance_records.member_id = ?
+        `
+      )
+      .all(loserId);
+
+    const upsert = db.prepare(
+      `
+        INSERT INTO attendance_records (attendance_session_id, member_id, present)
+        VALUES (?, ?, ?)
+        ON CONFLICT(attendance_session_id, member_id)
+        DO UPDATE SET
+          present = MAX(present, excluded.present),
+          marked_at = CURRENT_TIMESTAMP
+      `
+    );
+    sessions.forEach((row) => upsert.run(row.attendance_session_id, winnerId, row.present));
+
+    db.prepare("DELETE FROM member_sub_ministries WHERE member_id = ?").run(loserId);
+    db.prepare("DELETE FROM attendance_records WHERE member_id = ?").run(loserId);
+    db.prepare("DELETE FROM member_fellowship_transfers WHERE member_id = ?").run(loserId);
+    db.prepare("DELETE FROM members WHERE id = ?").run(loserId);
+
+    const refreshedDuplicates = detectDuplicateMembers({
+      fullName: winner.full_name,
+      email: winner.email,
+      phone: winner.phone,
+      memberId: winnerId,
+    });
+    const duplicateNotes = refreshedDuplicates.length
+      ? refreshedDuplicates.map((item) => `${item.full_name} (${item.email}, ${item.phone})`).join("; ")
+      : null;
+    db.prepare(
+      "UPDATE members SET duplicate_flag = ?, duplicate_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+    ).run(refreshedDuplicates.length ? 1 : 0, duplicateNotes, winnerId);
+  })();
+
+  logAudit(null, "member_merged", "member", winnerId, `Merged ${loser.full_name} (${loserId}) into ${winner.full_name} (${winnerId})`);
+  setFlash(req, "success", `Merged ${loser.full_name} into ${winner.full_name}. Attendance history was preserved.`);
+  return res.redirect(`/members/${winnerId}`);
+});
+
 app.post("/members/:id/transfer", requireAuth, (req, res) => {
   const member = getMemberWithDetails(Number(req.params.id));
   if (!member) {
@@ -2231,32 +2223,6 @@ app.post("/members/:id/transfer", requireAuth, (req, res) => {
       currentUser: req.currentUser || res.locals.currentUser || null,
       currentPath: req.path,
       csrfToken: res.locals.csrfToken || "",
-    });
-
-    app.post("/members/:id/archive", requireAuth, (req, res) => {
-      const member = getMemberWithDetails(Number(req.params.id));
-      if (!member) {
-        setFlash(req, "error", "Member not found.");
-        return res.redirect("/members");
-      }
-
-      archiveMember(member.id, String(req.body.reason || "").trim());
-      logAudit(null, "member_archived", "member", member.id, member.full_name);
-      setFlash(req, "success", `${member.full_name} was archived.`);
-      return res.redirect("/members");
-    });
-
-    app.post("/members/:id/restore", requireAuth, (req, res) => {
-      const member = getMemberWithDetails(Number(req.params.id));
-      if (!member) {
-        setFlash(req, "error", "Member not found.");
-        return res.redirect("/members?includeArchived=1");
-      }
-
-      restoreMember(member.id);
-      logAudit(null, "member_restored", "member", member.id, member.full_name);
-      setFlash(req, "success", `${member.full_name} was restored.`);
-      return res.redirect("/members?includeArchived=1");
     });
   }
 
@@ -2295,6 +2261,32 @@ app.post("/members/:id/transfer", requireAuth, (req, res) => {
   logAudit(null, "member_transferred", "member", member.id, `${member.fellowship_name || "No Fellowship"} -> ${destination.name}`);
   setFlash(req, "success", `${member.full_name} moved to ${destination.name}. Attendance history is preserved and shown by fellowship segment.`);
   return res.redirect(`/members/${member.id}`);
+});
+
+app.post("/members/:id/archive", requireAuth, (req, res) => {
+  const member = getMemberWithDetails(Number(req.params.id));
+  if (!member) {
+    setFlash(req, "error", "Member not found.");
+    return res.redirect("/members");
+  }
+
+  archiveMember(member.id, String(req.body.reason || "").trim());
+  logAudit(null, "member_archived", "member", member.id, member.full_name);
+  setFlash(req, "success", `${member.full_name} was archived.`);
+  return res.redirect("/members");
+});
+
+app.post("/members/:id/restore", requireAuth, (req, res) => {
+  const member = getMemberWithDetails(Number(req.params.id));
+  if (!member) {
+    setFlash(req, "error", "Member not found.");
+    return res.redirect("/members?includeArchived=1");
+  }
+
+  restoreMember(member.id);
+  logAudit(null, "member_restored", "member", member.id, member.full_name);
+  setFlash(req, "success", `${member.full_name} was restored.`);
+  return res.redirect("/members?includeArchived=1");
 });
 
 app.post("/members/:id/edit", requireAuth, (req, res) => {
@@ -2395,6 +2387,37 @@ app.get("/fellowships", requireAuth, (_req, res) => {
   });
 });
 
+app.get("/leadership", requireAuth, (req, res) => {
+  const search = String(req.query.search || "").trim().toLowerCase();
+  const leaders = db
+    .prepare(
+      `
+        SELECT members.id, members.full_name, roles.display_name AS role_name, roles.role_type,
+               COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name,
+               fellowships.slug AS fellowship_slug
+        FROM members
+        JOIN roles ON roles.id = members.role_id
+        LEFT JOIN fellowships ON fellowships.id = members.fellowship_id
+        WHERE members.archived_at IS NULL
+          AND roles.role_type IN ('Executive','Rep','Director')
+        ORDER BY fellowship_name, roles.role_type, role_name, members.full_name
+      `
+    )
+    .all()
+    .filter(
+      (row) =>
+        !search ||
+        row.full_name.toLowerCase().includes(search) ||
+        row.role_name.toLowerCase().includes(search)
+    );
+
+  res.render("pages/leadership", {
+    pageTitle: "Leadership Directory",
+    leaders,
+    search,
+  });
+});
+
 app.get("/fellowships/:slug", requireAuth, (req, res) => {
   const fellowship = db
     .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
@@ -2405,32 +2428,6 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
       currentUser: req.currentUser || res.locals.currentUser || null,
       currentPath: req.path,
       csrfToken: res.locals.csrfToken || "",
-    });
-
-    app.get("/leadership", requireAuth, (req, res) => {
-      const search = String(req.query.search || "").trim().toLowerCase();
-      const leaders = db
-        .prepare(
-          `
-            SELECT members.id, members.full_name, roles.display_name AS role_name, roles.role_type,
-                   COALESCE(fellowships.name, 'No Fellowship') AS fellowship_name,
-                   fellowships.slug AS fellowship_slug
-            FROM members
-            JOIN roles ON roles.id = members.role_id
-            LEFT JOIN fellowships ON fellowships.id = members.fellowship_id
-            WHERE members.archived_at IS NULL
-              AND roles.role_type IN ('Executive','Rep','Director')
-            ORDER BY fellowship_name, roles.role_type, role_name, members.full_name
-          `
-        )
-        .all()
-        .filter((row) => !search || row.full_name.toLowerCase().includes(search) || row.role_name.toLowerCase().includes(search));
-
-      res.render("pages/leadership", {
-        pageTitle: "Leadership Directory",
-        leaders,
-        search,
-      });
     });
   }
 
@@ -2720,34 +2717,6 @@ app.post(
         : []
     );
 
-    app.get("/terms", requireAuth, (req, res) => {
-      const terms = db
-        .prepare("SELECT id, label, start_date, end_date, created_at FROM terms ORDER BY start_date DESC")
-        .all();
-      res.render("pages/terms", {
-        pageTitle: "Terms",
-        terms,
-        csrfToken: res.locals.csrfToken,
-      });
-    });
-
-    app.post("/terms", requireAuth, (req, res) => {
-      const label = String(req.body.label || "").trim();
-      const startDate = String(req.body.startDate || "").trim();
-      const endDate = String(req.body.endDate || "").trim();
-      if (!label || !startDate || !endDate || endDate < startDate) {
-        setFlash(req, "error", "Enter a valid term label, start date, and end date.");
-        return res.redirect("/terms");
-      }
-
-      db.prepare(
-        "INSERT INTO terms (label, start_date, end_date) VALUES (?, ?, ?)"
-      ).run(label, startDate, endDate);
-      logAudit(null, "term_created", "term", null, label);
-      setFlash(req, "success", `Term ${label} added.`);
-      return res.redirect("/terms");
-    });
-
     const activeMembers = db
       .prepare(
         `
@@ -2809,6 +2778,33 @@ app.post(
     return res.redirect(`/fellowships/${fellowship.slug}/attendance?weekStart=${weekStart}`);
   }
 );
+
+app.get("/terms", requireAuth, (req, res) => {
+  const terms = db
+    .prepare("SELECT id, label, start_date, end_date, created_at FROM terms ORDER BY start_date DESC")
+    .all();
+  res.render("pages/terms", {
+    pageTitle: "Terms",
+    terms,
+    csrfToken: res.locals.csrfToken,
+  });
+});
+
+app.post("/terms", requireAuth, (req, res) => {
+  const label = String(req.body.label || "").trim();
+  const startDate = String(req.body.startDate || "").trim();
+  const endDate = String(req.body.endDate || "").trim();
+  if (!label || !startDate || !endDate || endDate < startDate) {
+    setFlash(req, "error", "Enter a valid term label, start date, and end date.");
+    return res.redirect("/terms");
+  }
+
+  db.prepare("INSERT INTO terms (label, start_date, end_date) VALUES (?, ?, ?)")
+    .run(label, startDate, endDate);
+  logAudit(null, "term_created", "term", null, label);
+  setFlash(req, "success", `Term ${label} added.`);
+  return res.redirect("/terms");
+});
 
 app.get("/exports/members.csv", requireAuth, (req, res) => {
   const filters = {
@@ -2913,128 +2909,6 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
         sub_ministry_name: member.sub_ministry_name || "None",
         role_name: member.role_name || "Regular Member",
       });
-
-      app.get("/fellowships/:slug/register-print", requireAuth, requireManagerForFellowship, (req, res) => {
-        const fellowship = db
-          .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
-          .get(req.params.slug);
-        const members = db
-          .prepare(
-            `
-              SELECT full_name, hostel, room_no
-              FROM members
-              WHERE fellowship_id = ? AND archived_at IS NULL
-              ORDER BY full_name
-            `
-          )
-          .all(fellowship.id);
-        const weekColumns = Array.from({ length: 8 }, (_, index) => `Week ${index + 1}`);
-        res.render("pages/register-print", {
-          pageTitle: `${fellowship.name} Register`,
-          fellowship,
-          members,
-          weekColumns,
-        });
-      });
-
-      app.post("/courses/:id/duration", requireAuth, (req, res) => {
-        const years = Number(req.body.durationYears);
-        if (!Number.isFinite(years) || years < 1 || years > 8) {
-          setFlash(req, "error", "Course duration must be between 1 and 8 years.");
-          return res.redirect("/settings");
-        }
-        db.prepare("UPDATE courses SET duration_years = ? WHERE id = ?").run(years, Number(req.params.id));
-        setFlash(req, "success", "Course duration updated.");
-        return res.redirect("/settings");
-      });
-
-      app.get("/members/promotions/preview", requireAuth, (req, res) => {
-        const members = db
-          .prepare(
-            `
-              SELECT members.id, members.full_name, members.level, courses.id AS course_id,
-                     courses.name AS course_name, courses.duration_years
-              FROM members
-              LEFT JOIN courses ON courses.id = members.course_id
-              WHERE members.archived_at IS NULL
-              ORDER BY members.full_name
-            `
-          )
-          .all();
-
-        const promotable = [];
-        const flagged = [];
-        members.forEach((member) => {
-          const currentLevel = Number(member.level);
-          if (!Number.isFinite(currentLevel) || currentLevel < 100) {
-            flagged.push({ ...member, reason: "Missing or invalid current level" });
-            return;
-          }
-          if (!member.duration_years) {
-            flagged.push({ ...member, reason: "Course duration not set" });
-            return;
-          }
-          const terminalLevel = Number(member.duration_years) * 100;
-          if (currentLevel >= terminalLevel) {
-            flagged.push({ ...member, reason: `At terminal level ${terminalLevel}` });
-            return;
-          }
-          promotable.push({ ...member, nextLevel: currentLevel + 100 });
-        });
-
-        res.render("pages/promotion-preview", {
-          pageTitle: "Annual Level Promotion Preview",
-          promotable,
-          flagged,
-          csrfToken: res.locals.csrfToken,
-        });
-      });
-
-      app.post("/members/promotions/apply", requireAuth, (req, res) => {
-        const promotions = db
-          .prepare(
-            `
-              SELECT members.id, members.level, courses.duration_years
-              FROM members
-              LEFT JOIN courses ON courses.id = members.course_id
-              WHERE members.archived_at IS NULL
-            `
-          )
-          .all();
-
-        const update = db.prepare("UPDATE members SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-        let promotedCount = 0;
-        db.transaction(() => {
-          promotions.forEach((member) => {
-            const level = Number(member.level);
-            if (!Number.isFinite(level) || !member.duration_years) {
-              return;
-            }
-            const terminal = Number(member.duration_years) * 100;
-            if (level < terminal) {
-              update.run(level + 100, member.id);
-              promotedCount += 1;
-            }
-          });
-        })();
-
-        logAudit(null, "annual_promotion_applied", "member", null, `promoted=${promotedCount}`);
-        setFlash(req, "success", `Annual promotion applied to ${promotedCount} member(s).`);
-        return res.redirect("/members/promotions/preview");
-      });
-
-      app.get("/settings/backup/download", requireAuth, (req, res) => {
-        const now = new Date().toISOString().replace(/[:.]/g, "-");
-        const backupDir = path.join(__dirname, "..", "db-backups");
-        if (!fs.existsSync(backupDir)) {
-          fs.mkdirSync(backupDir, { recursive: true });
-        }
-        const backupPath = path.join(backupDir, `manual-backup-${now}.db`);
-        db.pragma("wal_checkpoint(FULL)");
-        fs.copyFileSync(path.resolve(process.env.DATABASE_PATH || "./data/teens-aloud.db"), backupPath);
-        logAudit(null, "backup_downloaded", "backup", null, backupPath);
-        return res.download(backupPath, `teens-aloud-backup-${now}.db`);
-      });
     });
 
     sheet.getRow(1).font = { bold: true };
@@ -3052,6 +2926,128 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
   } catch (error) {
     return next(error);
   }
+});
+
+app.get("/fellowships/:slug/register-print", requireAuth, requireManagerForFellowship, (req, res) => {
+  const fellowship = db
+    .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
+    .get(req.params.slug);
+  const members = db
+    .prepare(
+      `
+        SELECT full_name, hostel, room_no
+        FROM members
+        WHERE fellowship_id = ? AND archived_at IS NULL
+        ORDER BY full_name
+      `
+    )
+    .all(fellowship.id);
+  const weekColumns = Array.from({ length: 8 }, (_, index) => `Week ${index + 1}`);
+  res.render("pages/register-print", {
+    pageTitle: `${fellowship.name} Register`,
+    fellowship,
+    members,
+    weekColumns,
+  });
+});
+
+app.post("/courses/:id/duration", requireAuth, (req, res) => {
+  const years = Number(req.body.durationYears);
+  if (!Number.isFinite(years) || years < 1 || years > 8) {
+    setFlash(req, "error", "Course duration must be between 1 and 8 years.");
+    return res.redirect("/settings");
+  }
+  db.prepare("UPDATE courses SET duration_years = ? WHERE id = ?").run(years, Number(req.params.id));
+  setFlash(req, "success", "Course duration updated.");
+  return res.redirect("/settings");
+});
+
+app.get("/members/promotions/preview", requireAuth, (req, res) => {
+  const members = db
+    .prepare(
+      `
+        SELECT members.id, members.full_name, members.level, courses.id AS course_id,
+               courses.name AS course_name, courses.duration_years
+        FROM members
+        LEFT JOIN courses ON courses.id = members.course_id
+        WHERE members.archived_at IS NULL
+        ORDER BY members.full_name
+      `
+    )
+    .all();
+
+  const promotable = [];
+  const flagged = [];
+  members.forEach((member) => {
+    const currentLevel = Number(member.level);
+    if (!Number.isFinite(currentLevel) || currentLevel < 100) {
+      flagged.push({ ...member, reason: "Missing or invalid current level" });
+      return;
+    }
+    if (!member.duration_years) {
+      flagged.push({ ...member, reason: "Course duration not set" });
+      return;
+    }
+    const terminalLevel = Number(member.duration_years) * 100;
+    if (currentLevel >= terminalLevel) {
+      flagged.push({ ...member, reason: `At terminal level ${terminalLevel}` });
+      return;
+    }
+    promotable.push({ ...member, nextLevel: currentLevel + 100 });
+  });
+
+  res.render("pages/promotion-preview", {
+    pageTitle: "Annual Level Promotion Preview",
+    promotable,
+    flagged,
+    csrfToken: res.locals.csrfToken,
+  });
+});
+
+app.post("/members/promotions/apply", requireAuth, (req, res) => {
+  const promotions = db
+    .prepare(
+      `
+        SELECT members.id, members.level, courses.duration_years
+        FROM members
+        LEFT JOIN courses ON courses.id = members.course_id
+        WHERE members.archived_at IS NULL
+      `
+    )
+    .all();
+
+  const update = db.prepare("UPDATE members SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+  let promotedCount = 0;
+  db.transaction(() => {
+    promotions.forEach((member) => {
+      const level = Number(member.level);
+      if (!Number.isFinite(level) || !member.duration_years) {
+        return;
+      }
+      const terminal = Number(member.duration_years) * 100;
+      if (level < terminal) {
+        update.run(level + 100, member.id);
+        promotedCount += 1;
+      }
+    });
+  })();
+
+  logAudit(null, "annual_promotion_applied", "member", null, `promoted=${promotedCount}`);
+  setFlash(req, "success", `Annual promotion applied to ${promotedCount} member(s).`);
+  return res.redirect("/members/promotions/preview");
+});
+
+app.get("/settings/backup/download", requireAuth, (req, res) => {
+  const now = new Date().toISOString().replace(/[:.]/g, "-");
+  const backupDir = path.join(__dirname, "..", "db-backups");
+  if (!fs.existsSync(backupDir)) {
+    fs.mkdirSync(backupDir, { recursive: true });
+  }
+  const backupPath = path.join(backupDir, `manual-backup-${now}.db`);
+  db.pragma("wal_checkpoint(FULL)");
+  fs.copyFileSync(path.resolve(process.env.DATABASE_PATH || "./data/teens-aloud.db"), backupPath);
+  logAudit(null, "backup_downloaded", "backup", null, backupPath);
+  return res.download(backupPath, `teens-aloud-backup-${now}.db`);
 });
 
 app.get("/health", (_req, res) => {

@@ -229,6 +229,7 @@ function initializeDatabase() {
 
   migrateMembersTableToRelaxedSchema();
   repairAttendanceRecordsForeignKeyReference();
+  repairMemberSubMinistriesForeignKeyReference();
   migrateLegacySubMinistryAssignments();
 
   seedReferenceData();
@@ -283,6 +284,55 @@ function repairAttendanceRecordsForeignKeyReference() {
       FROM attendance_records_legacy
     `);
     db.exec("DROP TABLE attendance_records_legacy");
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+function repairMemberSubMinistriesForeignKeyReference() {
+  const linkTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'member_sub_ministries'")
+    .get();
+
+  if (!linkTableExists) {
+    return;
+  }
+
+  const foreignKeys = db.prepare("PRAGMA foreign_key_list(member_sub_ministries)").all();
+  const stillPointsToLegacyMemberTable = foreignKeys.some(
+    (entry) => entry.table === "members_legacy" || entry.table === "main.members_legacy"
+  );
+
+  if (!stillPointsToLegacyMemberTable) {
+    return;
+  }
+
+  db.exec("PRAGMA foreign_keys = OFF");
+
+  try {
+    const legacyLinkTable = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'member_sub_ministries_legacy'")
+      .get();
+    if (legacyLinkTable) {
+      db.exec("DROP TABLE member_sub_ministries_legacy");
+    }
+
+    db.exec("ALTER TABLE member_sub_ministries RENAME TO member_sub_ministries_legacy");
+    db.exec(`
+      CREATE TABLE member_sub_ministries (
+        member_id INTEGER NOT NULL,
+        sub_ministry_id INTEGER NOT NULL,
+        PRIMARY KEY (member_id, sub_ministry_id),
+        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE CASCADE,
+        FOREIGN KEY (sub_ministry_id) REFERENCES sub_ministries(id) ON DELETE CASCADE
+      );
+    `);
+    db.exec(`
+      INSERT INTO member_sub_ministries (member_id, sub_ministry_id)
+      SELECT member_id, sub_ministry_id
+      FROM member_sub_ministries_legacy
+    `);
+    db.exec("DROP TABLE member_sub_ministries_legacy");
   } finally {
     db.exec("PRAGMA foreign_keys = ON");
   }
@@ -406,7 +456,14 @@ function migrateMembersTableToRelaxedSchema() {
         );
       `);
 
-      const sourceName = membersTableExists ? "members_legacy" : "members_legacy";
+      // Determine the correct source table to copy rows from. Use members_legacy if it exists
+      // (this happens when we renamed the original members table), otherwise fall back to members.
+      const sourceName = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='members_legacy'")
+        .get()
+        ? "members_legacy"
+        : "members";
+
       db.exec(`
         INSERT INTO members (
           id, full_name, gender, birth_day, birth_month, hostel, room_no, course_id,
