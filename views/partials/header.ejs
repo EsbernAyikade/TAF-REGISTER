@@ -27,6 +27,54 @@
         <a href="/fellowships" class="nav-link <%= currentPath === '/fellowships' || currentPath.startsWith('/fellowships/') ? 'active' : '' %>">Fellowships</a>
         <a href="/leadership" class="nav-link <%= currentPath.startsWith('/leadership') ? 'active' : '' %>">Leadership</a>
         <a href="/members/import" class="nav-link <%= currentPath === '/members/import' ? 'active' : '' %>">Import</a>
+
+        <div class="header-notifications">
+          <button type="button" class="notification-button" aria-label="Open alerts" title="Alerts">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 2.75a5.75 5.75 0 0 1 5.75 5.75v3.88c0 .84.24 1.66.7 2.37l1.31 1.96a1 1 0 0 1-.85 1.58H5.09a1 1 0 0 1-.85-1.58l1.31-1.96a3.98 3.98 0 0 0 .7-2.37V8.5A5.75 5.75 0 0 1 12 2.75Zm0 18.5c-1.38 0-2.5-1.12-2.5-2.5h5c0 1.38-1.12 2.5-2.5 2.5Z"/>
+            </svg>
+            <% if (unreadNotificationCount > 0) { %>
+              <span class="notification-badge"><%= unreadNotificationCount > 9 ? '9+' : unreadNotificationCount %></span>
+            <% } %>
+          </button>
+
+          <div class="notification-panel" role="menu" aria-label="Notifications">
+            <div class="notification-header">
+              <strong>Alerts</strong>
+              <% if (unreadNotificationCount > 0) { %>
+                <form action="/notifications/mark-read" method="post" class="inline-form">
+                  <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+                  <% (notifications || []).filter((notification) => !notification.is_read).forEach((notification) => { %>
+                    <input type="hidden" name="notificationIds" value="<%= notification.id %>" />
+                  <% }) %>
+                  <button type="submit" class="text-button text-button-small">Mark all read</button>
+                </form>
+              <% } %>
+            </div>
+
+            <% const unreadList = (notifications || []).filter((n) => !n.is_read);
+               const displayList = unreadList.length > 0 ? unreadList : (notifications || []);
+            %>
+
+            <% if (displayList.length === 0) { %>
+              <div class="notification-empty">No alerts yet.</div>
+            <% } else { %>
+              <% displayList.forEach((notification) => { %>
+                <a href="<%= notification.target_link || '/dashboard' %>" class="notification-item <%= notification.is_read ? 'read' : 'unread' %>">
+                  <span class="notification-indicator <%= notification.type || 'info' %>"></span>
+                  <span class="notification-copy">
+                    <strong><%= notification.title %></strong>
+                    <small><%= notification.message %></small>
+                  </span>
+                </a>
+              <% }) %>
+              <div class="notification-footer" style="padding:.4rem .45rem; border-top:2px solid var(--line); margin-top:.4rem; text-align:right">
+                <a href="/notifications" class="text-link">View all notifications</a>
+              </div>
+            <% } %>
+          </div>
+        </div>
+
         <a href="/settings" class="settings-button <%= currentPath === '/settings' ? 'active' : '' %>" aria-label="Open settings" title="Settings">
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.18l-2.39.96a7.18 7.18 0 0 0-1.63-.94L14.37 2.5a.5.5 0 0 0-.5-.34h-3.74a.5.5 0 0 0-.5.34l-.35 2.46a7.18 7.18 0 0 0-1.63.94l-2.39-.96a.5.5 0 0 0-.6.18L2.71 9.84a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94l-2.03 1.58a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.18l2.39-.96c.5.39 1.04.7 1.63.94l.35 2.46a.5.5 0 0 0 .5.34h3.74a.5.5 0 0 0 .5-.34l.35-2.46c.59-.24 1.13-.55 1.63-.94l2.39.96a.5.5 0 0 0 .6-.18l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z"/>

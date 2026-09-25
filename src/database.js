@@ -202,6 +202,20 @@ function initializeDatabase() {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS notifications (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL DEFAULT 'info',
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      target_link TEXT,
+      member_id INTEGER,
+      fellowship_id INTEGER,
+      is_read INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE SET NULL,
+      FOREIGN KEY (fellowship_id) REFERENCES fellowships(id) ON DELETE SET NULL
+    );
+
     CREATE TABLE IF NOT EXISTS terms (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       label TEXT NOT NULL UNIQUE,

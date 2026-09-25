@@ -201,17 +201,30 @@ app.use((req, res, next) => {
     )
     .all();
 
-  const globalRoles = roles.filter((role) => role.scope_type !== "fellowship");
+  const dedupedRoles = Array.from(
+    new Map(
+      roles.map((role) => [`${role.role_type}|${role.position_name}|${role.scope_type}|${role.fellowship_id ?? "global"}`, role])
+    ).values()
+  );
+  const globalRoles = dedupedRoles.filter((role) => role.scope_type !== "fellowship");
   const roleCatalogByFellowship = fellowships.reduce((catalog, fellowship) => {
-    const fellowshipRoles = roles.filter(
+    const fellowshipRoles = dedupedRoles.filter(
       (role) =>
         role.scope_type === "fellowship" && role.fellowship_id === fellowship.id
     );
-    catalog[fellowship.id] = [...fellowshipRoles, ...globalRoles];
+    const uniqueFellowshipRoles = Array.from(
+      new Map(fellowshipRoles.map((role) => [role.position_name, role])).values()
+    );
+    const merged = [...uniqueFellowshipRoles, ...globalRoles];
+    const uniqueCatalogRoles = Array.from(
+      new Map(merged.map((role) => [`${role.role_type}|${role.position_name}|${role.scope_type}|${role.fellowship_id ?? "global"}`, role])).values()
+    );
+    catalog[fellowship.id] = uniqueCatalogRoles;
     return catalog;
   }, {});
   roleCatalogByFellowship[""] = globalRoles;
 
+  const notifications = getNotifications(8);
   res.locals.currentUser = user;
   res.locals.isProduction = isProduction;
   res.locals.currentPath = req.path;
@@ -219,12 +232,14 @@ app.use((req, res, next) => {
   res.locals.courses = courses;
   res.locals.subMinistries = subMinistries;
   res.locals.hostelSuggestions = hostelSuggestions;
-  res.locals.allRoles = roles;
+  res.locals.allRoles = dedupedRoles;
   res.locals.memberStatuses = MEMBER_STATUSES;
   res.locals.genderOptions = GENDER_OPTIONS;
   res.locals.studyLevels = STUDY_LEVELS;
   res.locals.roleCatalogByFellowship = roleCatalogByFellowship;
   res.locals.flash = req.session.flash || null;
+  res.locals.notifications = notifications;
+  res.locals.unreadNotificationCount = notifications.filter((notification) => !notification.is_read).length;
   res.locals.formatBirthday = (day, month) =>
     day && month ? `${MONTHS[month - 1]} ${day}` : "Not provided";
   res.locals.formatDate = (value) =>
@@ -249,6 +264,52 @@ function setFlash(req, type, message) {
   if (req.res) {
     req.res.locals.flash = req.session.flash;
   }
+}
+
+function addNotification({ type = "info", title, message, link = null, memberId = null, fellowshipId = null } = {}) {
+  if (!title || !message) {
+    return null;
+  }
+
+  const result = db
+    .prepare(
+      `
+        INSERT INTO notifications (type, title, message, target_link, member_id, fellowship_id)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `
+    )
+    .run(type, title, message, link || null, memberId || null, fellowshipId || null);
+
+  return result.lastInsertRowid;
+}
+
+function getNotifications(limit = 8) {
+  return db
+    .prepare(
+      `
+        SELECT id, type, title, message, target_link, member_id, fellowship_id, is_read, created_at
+        FROM notifications
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+      `
+    )
+    .all(limit);
+}
+
+function markNotificationsRead(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return 0;
+  }
+
+  const uniqueIds = [...new Set(ids.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))];
+  if (uniqueIds.length === 0) {
+    return 0;
+  }
+
+  const placeholders = uniqueIds.map(() => "?").join(", ");
+  return db
+    .prepare(`UPDATE notifications SET is_read = 1 WHERE id IN (${placeholders})`)
+    .run(...uniqueIds).changes;
 }
 
 function requireAuth(req, res, next) {
@@ -1066,6 +1127,15 @@ app.post("/members/new", requireAuth, (req, res) => {
   }
 
   logAudit(null, "member_added", "member", result.lastInsertRowid, duplicateNotes);
+  addNotification({
+    type: duplicates.length ? "warning" : "success",
+    title: duplicates.length ? "Duplicate review needed" : "Member added",
+    message: duplicates.length
+      ? `${payload.fullName} was added and flagged as a possible duplicate.`
+      : `${payload.fullName} was added to the directory.`,
+    link: `/members/${result.lastInsertRowid}`,
+    memberId: result.lastInsertRowid,
+  });
 
   setFlash(
     req,
@@ -1100,6 +1170,31 @@ app.post("/login", loginLimiter, (req, res) => {
   logAudit(null, "login", "session", null, "Shared password login");
   setFlash(req, "success", "Welcome back.");
   return res.redirect("/dashboard");
+});
+
+app.post("/notifications/mark-read", requireAuth, (req, res) => {
+  const notificationIds = parseBulkIds(req.body.notificationIds);
+  markNotificationsRead(notificationIds);
+  return res.redirect(req.get("Referer") || "/dashboard");
+});
+
+app.get("/notifications", requireAuth, (req, res) => {
+  const notifications = db
+    .prepare(
+      `
+        SELECT id, type, title, message, target_link, member_id, fellowship_id, is_read, created_at
+        FROM notifications
+        ORDER BY created_at DESC, id DESC
+        LIMIT 200
+      `
+    )
+    .all();
+
+  res.render("pages/notifications", {
+    pageTitle: "Notifications",
+    csrfToken: res.locals.csrfToken,
+    notifications,
+  });
 });
 
 app.get("/settings", requireAuth, (req, res) => {
@@ -2213,6 +2308,13 @@ app.post("/members/:id/merge", requireAuth, (req, res) => {
   })();
 
   logAudit(null, "member_merged", "member", winnerId, `Merged ${loser.full_name} (${loserId}) into ${winner.full_name} (${winnerId})`);
+  addNotification({
+    type: "info",
+    title: "Duplicate merged",
+    message: `Merged ${loser.full_name} into ${winner.full_name}. Attendance history was preserved.`,
+    link: `/members/${winnerId}`,
+    memberId: winnerId,
+  });
   setFlash(req, "success", `Merged ${loser.full_name} into ${winner.full_name}. Attendance history was preserved.`);
   return res.redirect(`/members/${winnerId}`);
 });
@@ -2261,6 +2363,14 @@ app.post("/members/:id/transfer", requireAuth, (req, res) => {
   })();
 
   logAudit(null, "member_transferred", "member", member.id, `${member.fellowship_name || "No Fellowship"} -> ${destination.name}`);
+  addNotification({
+    type: "info",
+    title: "Fellowship transfer",
+    message: `${member.full_name} moved to ${destination.name}. Attendance history was preserved.`,
+    link: `/members/${member.id}`,
+    memberId: member.id,
+    fellowshipId: toFellowshipId,
+  });
   setFlash(req, "success", `${member.full_name} moved to ${destination.name}. Attendance history is preserved and shown by fellowship segment.`);
   return res.redirect(`/members/${member.id}`);
 });
@@ -2274,6 +2384,13 @@ app.post("/members/:id/archive", requireAuth, (req, res) => {
 
   archiveMember(member.id, String(req.body.reason || "").trim());
   logAudit(null, "member_archived", "member", member.id, member.full_name);
+  addNotification({
+    type: "warning",
+    title: "Member archived",
+    message: `${member.full_name} was archived and hidden from the active directory by default.`,
+    link: `/members?includeArchived=1`,
+    memberId: member.id,
+  });
   setFlash(req, "success", `${member.full_name} was archived.`);
   return res.redirect("/members");
 });
@@ -2287,6 +2404,13 @@ app.post("/members/:id/restore", requireAuth, (req, res) => {
 
   restoreMember(member.id);
   logAudit(null, "member_restored", "member", member.id, member.full_name);
+  addNotification({
+    type: "success",
+    title: "Member restored",
+    message: `${member.full_name} was restored and is visible again in the active directory.`,
+    link: `/members/${member.id}`,
+    memberId: member.id,
+  });
   setFlash(req, "success", `${member.full_name} was restored.`);
   return res.redirect("/members?includeArchived=1");
 });
@@ -2363,6 +2487,13 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
     existingMember.id,
     duplicateNotes
   );
+  addNotification({
+    type: "info",
+    title: "Member updated",
+    message: `${existingMember.full_name} was updated in the directory.`,
+    link: `/members/${existingMember.id}`,
+    memberId: existingMember.id,
+  });
   setFlash(req, "success", "Member record updated.");
   return res.redirect(`/members/${existingMember.id}`);
 });
