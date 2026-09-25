@@ -150,7 +150,7 @@
         <p>Select members below, then apply one shared update.</p>
       </div>
     </div>
-    <form action="/members/bulk-edit" method="post" class="filter-grid">
+    <form id="bulk-form" action="/members/bulk-edit" method="post" class="filter-grid">
       <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
       <label>
         <span>Action</span>
@@ -255,9 +255,6 @@
     </div>
   </section>
 
-  <form id="bulk-form" action="/members/bulk-edit" method="post" style="display:none;">
-    <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
-  </form>
 </main>
 
 <%- include('../partials/footer') %>
