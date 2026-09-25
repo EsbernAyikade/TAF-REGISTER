@@ -84,6 +84,26 @@
           <a href="/members/promotions/preview" class="text-link">Annual level promotion preview</a>
           <a href="/terms" class="text-link">Manage terms</a>
           <a href="/leadership" class="text-link">Leadership directory</a>
+          <hr />
+          <h3>Notifications</h3>
+          <p class="fine-print">Control which alerts you receive and by which channel.</p>
+          <form action="/settings/notifications" method="post">
+            <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+            <% const prefRows = db.prepare('SELECT id, user_id, event_type, in_app, email, sms FROM notification_preferences WHERE user_id = (SELECT id FROM users WHERE email = ? LIMIT 1)').all(INTERNAL_ACTOR_EMAIL); %>
+            <% if (prefRows.length === 0) { %>
+              <p class="muted">No notification preferences set for your account. Defaults will be used.</p>
+            <% } else { %>
+              <% prefRows.forEach((p) => { %>
+                <div class="setting-row">
+                  <strong><%= p.event_type %></strong>
+                  <label class="inline-check"><input type="checkbox" name="in_app_<%= p.id %>" <%= p.in_app ? 'checked' : '' %> /> In app</label>
+                  <label class="inline-check"><input type="checkbox" name="email_<%= p.id %>" <%= p.email ? 'checked' : '' %> /> Email</label>
+                  <label class="inline-check"><input type="checkbox" name="sms_<%= p.id %>" <%= p.sms ? 'checked' : '' %> /> SMS</label>
+                </div>
+              <% }) %>
+            <% } %>
+            <div style="margin-top:.6rem"><button class="button button-outline button-small">Save notification preferences</button></div>
+          </form>
         </div>
       </div>
     </div>

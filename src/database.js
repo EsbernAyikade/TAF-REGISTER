@@ -241,6 +241,71 @@ function initializeDatabase() {
     db.exec("ALTER TABLE members ADD COLUMN archived_reason TEXT");
   }
 
+  // Add recipient_user_id to notifications (optional column) if migrations predate it
+  const notificationColumns = db.prepare("PRAGMA table_info(notifications)").all();
+  if (notificationColumns.length === 0) {
+    // notifications table created earlier in this branch; if not present, create it properly
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL DEFAULT 'info',
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        target_link TEXT,
+        member_id INTEGER,
+        fellowship_id INTEGER,
+        recipient_user_id INTEGER,
+        is_read INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE SET NULL,
+        FOREIGN KEY (fellowship_id) REFERENCES fellowships(id) ON DELETE SET NULL,
+        FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+    `);
+  } else {
+    if (!notificationColumns.some((c) => c.name === 'recipient_user_id')) {
+      db.exec('ALTER TABLE notifications ADD COLUMN recipient_user_id INTEGER');
+    }
+  }
+
+  // Notification preferences per user
+  const prefTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='notification_preferences'")
+    .get();
+  if (!prefTable) {
+    db.exec(`
+      CREATE TABLE notification_preferences (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        event_type TEXT NOT NULL,
+        in_app INTEGER NOT NULL DEFAULT 1,
+        email INTEGER NOT NULL DEFAULT 0,
+        sms INTEGER NOT NULL DEFAULT 0,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      );
+    `);
+  }
+
+  // Notification deliveries log (attempts)
+  const deliveryTable = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='notification_deliveries'")
+    .get();
+  if (!deliveryTable) {
+    db.exec(`
+      CREATE TABLE notification_deliveries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        notification_id INTEGER NOT NULL,
+        channel TEXT NOT NULL,
+        recipient TEXT,
+        status TEXT NOT NULL,
+        details TEXT,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE
+      );
+    `);
+  }
+
   migrateMembersTableToRelaxedSchema();
   repairAttendanceRecordsForeignKeyReference();
   repairMemberSubMinistriesForeignKeyReference();
@@ -248,8 +313,7 @@ function initializeDatabase() {
   migrateLegacySubMinistryAssignments();
 
   seedReferenceData();
-  seedInternalActor();
-  seedSharedAccessPassword();
+  seedInternalActor();  seedSharedAccessPassword();
 }
 
 function repairAttendanceRecordsForeignKeyReference() {

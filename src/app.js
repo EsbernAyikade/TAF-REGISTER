@@ -266,7 +266,7 @@ function setFlash(req, type, message) {
   }
 }
 
-function addNotification({ type = "info", title, message, link = null, memberId = null, fellowshipId = null } = {}) {
+function addNotification({ type = "info", title, message, link = null, memberId = null, fellowshipId = null, recipientUserId = null } = {}) {
   if (!title || !message) {
     return null;
   }
@@ -274,16 +274,39 @@ function addNotification({ type = "info", title, message, link = null, memberId 
   const result = db
     .prepare(
       `
-        INSERT INTO notifications (type, title, message, target_link, member_id, fellowship_id)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO notifications (type, title, message, target_link, member_id, fellowship_id, recipient_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
       `
     )
-    .run(type, title, message, link || null, memberId || null, fellowshipId || null);
+    .run(type, title, message, link || null, memberId || null, fellowshipId || null, recipientUserId || null);
 
-  return result.lastInsertRowid;
+  const id = result.lastInsertRowid;
+
+  // Attempt delivery based on preferences (deferred/stubbed)
+  try {
+    scheduleNotificationDelivery(id);
+  } catch (e) {
+    console.error('Failed to schedule notification delivery', e);
+  }
+
+  return id;
 }
 
-function getNotifications(limit = 8) {
+function getNotifications(limit = 8, currentUserId = null) {
+  if (currentUserId) {
+    return db
+      .prepare(
+        `
+          SELECT id, type, title, message, target_link, member_id, fellowship_id, is_read, created_at
+          FROM notifications
+          WHERE recipient_user_id IS NULL OR recipient_user_id = ?
+          ORDER BY created_at DESC, id DESC
+          LIMIT ?
+        `
+      )
+      .all(currentUserId, limit);
+  }
+
   return db
     .prepare(
       `
@@ -310,6 +333,51 @@ function markNotificationsRead(ids) {
   return db
     .prepare(`UPDATE notifications SET is_read = 1 WHERE id IN (${placeholders})`)
     .run(...uniqueIds).changes;
+}
+
+// Schedule/attempt delivery (very small stubbed system). Real email/SMS requires
+// configuration — for now this records attempts and logs if delivery would be sent.
+function scheduleNotificationDelivery(notificationId) {
+  const notification = db
+    .prepare('SELECT * FROM notifications WHERE id = ?')
+    .get(notificationId);
+  if (!notification) return;
+
+  const recipients = [];
+  if (notification.recipient_user_id) {
+    recipients.push(notification.recipient_user_id);
+  } else {
+    // pick internal user(s) as recipients: the shared-access internal actor
+    const internal = db.prepare('SELECT id, email FROM users WHERE email = ?').get(INTERNAL_ACTOR_EMAIL);
+    if (internal) recipients.push(internal.id);
+  }
+
+  recipients.forEach((userId) => {
+    const user = db.prepare('SELECT id, email, full_name FROM users WHERE id = ?').get(userId);
+    if (!user) return;
+
+    // Check preferences (default to in_app only)
+    const pref = db.prepare('SELECT in_app, email, sms FROM notification_preferences WHERE user_id = ? AND event_type = ?').get(userId, notification.type);
+    const inApp = pref ? Boolean(pref.in_app) : true;
+    const emailPref = pref ? Boolean(pref.email) : false;
+    const smsPref = pref ? Boolean(pref.sms) : false;
+
+    if (inApp) {
+      db.prepare('INSERT INTO notification_deliveries (notification_id, channel, recipient, status, details) VALUES (?, ?, ?, ?, ?)').run(notificationId, 'in_app', String(user.id), 'delivered', 'in-app');
+    }
+
+    if (emailPref && user.email) {
+      // stubbed send
+      console.log(`Sending email to ${user.email}: ${notification.title} — ${notification.message}`);
+      db.prepare('INSERT INTO notification_deliveries (notification_id, channel, recipient, status, details) VALUES (?, ?, ?, ?, ?)').run(notificationId, 'email', user.email, 'delivered', 'stubbed');
+    }
+
+    if (smsPref) {
+      // stubbed send
+      console.log(`Sending SMS to ${user.id} for notification ${notification.id}: ${notification.title}`);
+      db.prepare('INSERT INTO notification_deliveries (notification_id, channel, recipient, status, details) VALUES (?, ?, ?, ?, ?)').run(notificationId, 'sms', String(user.id), 'delivered', 'stubbed');
+    }
+  });
 }
 
 function requireAuth(req, res, next) {
