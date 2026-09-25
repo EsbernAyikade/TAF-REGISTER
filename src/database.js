@@ -503,6 +503,8 @@ function migrateMembersTableToRelaxedSchema() {
           duplicate_notes TEXT,
           joined_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           approved_at TEXT,
+          archived_at TEXT,
+          archived_reason TEXT,
           created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
           FOREIGN KEY (course_id) REFERENCES courses(id),
@@ -512,8 +514,6 @@ function migrateMembersTableToRelaxedSchema() {
         );
       `);
 
-      // Determine the correct source table to copy rows from. Use members_legacy if it exists
-      // (this happens when we renamed the original members table), otherwise fall back to members.
       const sourceName = db
         .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='members_legacy'")
         .get()
@@ -525,13 +525,13 @@ function migrateMembersTableToRelaxedSchema() {
           id, full_name, gender, birth_day, birth_month, hostel, room_no, course_id,
           fellowship_id, sub_ministry_id, role_id, phone, email, level,
           status, approval_status, duplicate_flag, duplicate_notes,
-          joined_at, approved_at, created_at, updated_at
+          joined_at, approved_at, archived_at, archived_reason, created_at, updated_at
         )
         SELECT
           id, full_name, gender, birth_day, birth_month, hostel, room_no, course_id,
           fellowship_id, sub_ministry_id, role_id, phone, email, level,
           status, approval_status, duplicate_flag, duplicate_notes,
-          joined_at, approved_at, created_at, updated_at
+          joined_at, approved_at, archived_at, archived_reason, created_at, updated_at
         FROM ${sourceName};
       `);
 
@@ -683,6 +683,7 @@ function seedSharedAccessPassword() {
 
 module.exports = {
   db,
+  databasePath,
   initializeDatabase,
   INTERNAL_ACTOR_EMAIL,
   SHARED_ACCESS_PASSWORD_KEY,

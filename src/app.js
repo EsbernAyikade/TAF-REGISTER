@@ -1,3 +1,4 @@
+const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const bcrypt = require("bcryptjs");
@@ -21,6 +22,7 @@ const {
 } = require("./domain-utils");
 const {
   db,
+  databasePath,
   initializeDatabase,
   INTERNAL_ACTOR_EMAIL,
   SHARED_ACCESS_PASSWORD_KEY,
@@ -526,6 +528,16 @@ function validateMemberPayload(payload) {
   return null;
 }
 
+function parseBulkIds(rawIds) {
+  if (Array.isArray(rawIds)) {
+    return rawIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0);
+  }
+  if (!rawIds) {
+    return [];
+  }
+  return [Number(rawIds)].filter((id) => Number.isFinite(id) && id > 0);
+}
+
 function getMemberSubMinistryIds(memberId) {
   const ids = db
     .prepare(
@@ -541,16 +553,6 @@ function getMemberSubMinistryIds(memberId) {
 
   if (ids.length > 0) {
     return ids;
-  }
-
-  function parseBulkIds(rawIds) {
-    if (Array.isArray(rawIds)) {
-      return rawIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0);
-    }
-    if (!rawIds) {
-      return [];
-    }
-    return [Number(rawIds)].filter((id) => Number.isFinite(id) && id > 0);
   }
 
   const legacy = db
@@ -3021,12 +3023,12 @@ app.post("/members/promotions/apply", requireAuth, (req, res) => {
   db.transaction(() => {
     promotions.forEach((member) => {
       const level = Number(member.level);
-      if (!Number.isFinite(level) || !member.duration_years) {
+      if (!Number.isFinite(level) || level < 100 || !member.duration_years) {
         return;
       }
       const terminal = Number(member.duration_years) * 100;
       if (level < terminal) {
-        update.run(level + 100, member.id);
+        update.run(String(level + 100), member.id);
         promotedCount += 1;
       }
     });
@@ -3045,7 +3047,7 @@ app.get("/settings/backup/download", requireAuth, (req, res) => {
   }
   const backupPath = path.join(backupDir, `manual-backup-${now}.db`);
   db.pragma("wal_checkpoint(FULL)");
-  fs.copyFileSync(path.resolve(process.env.DATABASE_PATH || "./data/teens-aloud.db"), backupPath);
+  fs.copyFileSync(databasePath, backupPath);
   logAudit(null, "backup_downloaded", "backup", null, backupPath);
   return res.download(backupPath, `teens-aloud-backup-${now}.db`);
 });
