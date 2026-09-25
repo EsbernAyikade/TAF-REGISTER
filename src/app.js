@@ -1178,6 +1178,25 @@ app.post("/notifications/mark-read", requireAuth, (req, res) => {
   return res.redirect(req.get("Referer") || "/dashboard");
 });
 
+app.get("/notifications", requireAuth, (req, res) => {
+  const notifications = db
+    .prepare(
+      `
+        SELECT id, type, title, message, target_link, member_id, fellowship_id, is_read, created_at
+        FROM notifications
+        ORDER BY created_at DESC, id DESC
+        LIMIT 200
+      `
+    )
+    .all();
+
+  res.render("pages/notifications", {
+    pageTitle: "Notifications",
+    csrfToken: res.locals.csrfToken,
+    notifications,
+  });
+});
+
 app.get("/settings", requireAuth, (req, res) => {
   res.render("pages/settings", {
     pageTitle: "Settings",

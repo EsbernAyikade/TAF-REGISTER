@@ -1,0 +1,43 @@
+<%- include('../partials/head', { pageTitle }) %>
+<%- include('../partials/header') %>
+<main class="container page narrow-page">
+  <section class="card">
+    <div class="section-heading">
+      <div>
+        <span class="eyebrow">Notifications</span>
+        <h1>Notification history</h1>
+      </div>
+    </div>
+
+    <div>
+      <form action="/notifications/mark-read" method="post">
+        <input type="hidden" name="_csrf" value="<%= csrfToken %>" />
+        <div style="margin-bottom:.6rem">
+          <button type="submit" class="button button-outline button-small">Mark selected read</button>
+          <a href="/dashboard" class="text-link" style="margin-left:1rem">Back to dashboard</a>
+        </div>
+
+        <% if (!notifications || notifications.length === 0) { %>
+          <div class="notification-empty">No notifications.</div>
+        <% } else { %>
+          <div style="display:grid;gap:.45rem">
+            <% notifications.forEach((n) => { %>
+              <label class="notification-item <%= n.is_read ? 'read' : 'unread' %>" style="display:flex;align-items:center;gap:.6rem">
+                <input type="checkbox" name="notificationIds" value="<%= n.id %>" <%= n.is_read ? '' : '' %> />
+                <a href="<%= n.target_link || '/dashboard' %>" style="flex:1;text-decoration:none;color:inherit">
+                  <div style="display:flex;justify-content:space-between;gap:1rem">
+                    <strong><%= n.title %></strong>
+                    <small class="fine-print"><%= new Date(n.created_at).toLocaleString() %></small>
+                  </div>
+                  <div><small class="muted"><%= n.message %></small></div>
+                </a>
+              </label>
+            <% }) %>
+          </div>
+        <% } %>
+      </form>
+    </div>
+  </section>
+</main>
+
+<%- include('../partials/footer') %>

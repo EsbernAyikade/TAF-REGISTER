@@ -52,10 +52,14 @@
               <% } %>
             </div>
 
-            <% if (!notifications || notifications.length === 0) { %>
+            <% const unreadList = (notifications || []).filter((n) => !n.is_read);
+               const displayList = unreadList.length > 0 ? unreadList : (notifications || []);
+            %>
+
+            <% if (displayList.length === 0) { %>
               <div class="notification-empty">No alerts yet.</div>
             <% } else { %>
-              <% notifications.forEach((notification) => { %>
+              <% displayList.forEach((notification) => { %>
                 <a href="<%= notification.target_link || '/dashboard' %>" class="notification-item <%= notification.is_read ? 'read' : 'unread' %>">
                   <span class="notification-indicator <%= notification.type || 'info' %>"></span>
                   <span class="notification-copy">
@@ -64,6 +68,9 @@
                   </span>
                 </a>
               <% }) %>
+              <div class="notification-footer" style="padding:.4rem .45rem; border-top:2px solid var(--line); margin-top:.4rem; text-align:right">
+                <a href="/notifications" class="text-link">View all notifications</a>
+              </div>
             <% } %>
           </div>
         </div>
