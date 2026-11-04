@@ -2356,6 +2356,11 @@ app.post("/members/:id/merge", requireAuth, (req, res) => {
     );
     sessions.forEach((row) => upsert.run(row.attendance_session_id, winnerId, row.present));
 
+    const combinedSubMinistryIds = [
+      ...new Set([...getMemberSubMinistryIds(winnerId), ...getMemberSubMinistryIds(loserId)]),
+    ];
+    setMemberSubMinistries(winnerId, combinedSubMinistryIds);
+
     db.prepare("DELETE FROM member_sub_ministries WHERE member_id = ?").run(loserId);
     db.prepare("DELETE FROM attendance_records WHERE member_id = ?").run(loserId);
     db.prepare("DELETE FROM member_fellowship_transfers WHERE member_id = ?").run(loserId);

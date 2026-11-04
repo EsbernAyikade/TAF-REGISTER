@@ -210,10 +210,12 @@ function initializeDatabase() {
       target_link TEXT,
       member_id INTEGER,
       fellowship_id INTEGER,
+      recipient_user_id INTEGER,
       is_read INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE SET NULL,
-      FOREIGN KEY (fellowship_id) REFERENCES fellowships(id) ON DELETE SET NULL
+      FOREIGN KEY (fellowship_id) REFERENCES fellowships(id) ON DELETE SET NULL,
+      FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS terms (
@@ -243,29 +245,8 @@ function initializeDatabase() {
 
   // Add recipient_user_id to notifications (optional column) if migrations predate it
   const notificationColumns = db.prepare("PRAGMA table_info(notifications)").all();
-  if (notificationColumns.length === 0) {
-    // notifications table created earlier in this branch; if not present, create it properly
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        type TEXT NOT NULL DEFAULT 'info',
-        title TEXT NOT NULL,
-        message TEXT NOT NULL,
-        target_link TEXT,
-        member_id INTEGER,
-        fellowship_id INTEGER,
-        recipient_user_id INTEGER,
-        is_read INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE SET NULL,
-        FOREIGN KEY (fellowship_id) REFERENCES fellowships(id) ON DELETE SET NULL,
-        FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE SET NULL
-      );
-    `);
-  } else {
-    if (!notificationColumns.some((c) => c.name === 'recipient_user_id')) {
-      db.exec('ALTER TABLE notifications ADD COLUMN recipient_user_id INTEGER');
-    }
+  if (!notificationColumns.some((column) => column.name === "recipient_user_id")) {
+    db.exec("ALTER TABLE notifications ADD COLUMN recipient_user_id INTEGER");
   }
 
   // Notification preferences per user
@@ -306,14 +287,23 @@ function initializeDatabase() {
     `);
   }
 
-  migrateMembersTableToRelaxedSchema();
+  // Keep child rows intact while SQLite retargets their foreign keys to the
+  // renamed table; repair each affected reference immediately afterwards.
+  db.exec("PRAGMA foreign_keys = OFF");
+  try {
+    migrateMembersTableToRelaxedSchema();
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
   repairAttendanceRecordsForeignKeyReference();
   repairMemberSubMinistriesForeignKeyReference();
   repairMemberFellowshipTransfersForeignKeyReference();
+  repairNotificationsForeignKeyReference();
   migrateLegacySubMinistryAssignments();
 
   seedReferenceData();
-  seedInternalActor();  seedSharedAccessPassword();
+  seedInternalActor();
+  seedSharedAccessPassword();
 }
 
 function repairAttendanceRecordsForeignKeyReference() {
@@ -467,6 +457,113 @@ function repairMemberFellowshipTransfersForeignKeyReference() {
       FROM member_fellowship_transfers_legacy
     `);
     db.exec("DROP TABLE member_fellowship_transfers_legacy");
+  } finally {
+    db.exec("PRAGMA foreign_keys = ON");
+  }
+}
+
+function repairNotificationsForeignKeyReference() {
+  const notificationsTableExists = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notifications'")
+    .get();
+
+  if (!notificationsTableExists) {
+    return;
+  }
+
+  const foreignKeys = db.prepare("PRAGMA foreign_key_list(notifications)").all();
+  const memberForeignKeyIsStale = foreignKeys.some(
+    (entry) => entry.from === "member_id" && entry.table.endsWith("members_legacy")
+  );
+  const recipientForeignKeyIsMissing = !foreignKeys.some(
+    (entry) => entry.from === "recipient_user_id" && entry.table === "users"
+  );
+
+  if (!memberForeignKeyIsStale && !recipientForeignKeyIsMissing) {
+    return;
+  }
+
+  db.exec("PRAGMA foreign_keys = OFF");
+
+  try {
+    const legacyNotificationsTable = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notifications_legacy'")
+      .get();
+    if (legacyNotificationsTable) {
+      db.exec("DROP TABLE notifications_legacy");
+    }
+
+    db.exec("ALTER TABLE notifications RENAME TO notifications_legacy");
+    db.exec(`
+      CREATE TABLE notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        type TEXT NOT NULL DEFAULT 'info',
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        target_link TEXT,
+        member_id INTEGER,
+        fellowship_id INTEGER,
+        recipient_user_id INTEGER,
+        is_read INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (member_id) REFERENCES members(id) ON DELETE SET NULL,
+        FOREIGN KEY (fellowship_id) REFERENCES fellowships(id) ON DELETE SET NULL,
+        FOREIGN KEY (recipient_user_id) REFERENCES users(id) ON DELETE SET NULL
+      );
+    `);
+    db.exec(`
+      INSERT INTO notifications (
+        id, type, title, message, target_link, member_id, fellowship_id,
+        recipient_user_id, is_read, created_at
+      )
+      SELECT
+        id, type, title, message, target_link, member_id, fellowship_id,
+        recipient_user_id, is_read, created_at
+      FROM notifications_legacy
+    `);
+    db.exec("DROP TABLE notifications_legacy");
+
+    const deliveryTableExists = db
+      .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notification_deliveries'")
+      .get();
+    if (deliveryTableExists) {
+      const deliveryForeignKeys = db.prepare("PRAGMA foreign_key_list(notification_deliveries)").all();
+      const deliveryForeignKeyIsStale = deliveryForeignKeys.some((entry) =>
+        entry.table.endsWith("notifications_legacy")
+      );
+      const deliveryForeignKeyIsMissing = !deliveryForeignKeys.some(
+        (entry) => entry.from === "notification_id" && entry.table === "notifications"
+      );
+      if (deliveryForeignKeyIsStale || deliveryForeignKeyIsMissing) {
+        const legacyDeliveryTable = db
+          .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notification_deliveries_legacy'")
+          .get();
+        if (legacyDeliveryTable) {
+          db.exec("DROP TABLE notification_deliveries_legacy");
+        }
+        db.exec("ALTER TABLE notification_deliveries RENAME TO notification_deliveries_legacy");
+        db.exec(`
+          CREATE TABLE notification_deliveries (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            notification_id INTEGER NOT NULL,
+            channel TEXT NOT NULL,
+            recipient TEXT,
+            status TEXT NOT NULL,
+            details TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (notification_id) REFERENCES notifications(id) ON DELETE CASCADE
+          );
+        `);
+        db.exec(`
+          INSERT INTO notification_deliveries (
+            id, notification_id, channel, recipient, status, details, created_at
+          )
+          SELECT id, notification_id, channel, recipient, status, details, created_at
+          FROM notification_deliveries_legacy
+        `);
+        db.exec("DROP TABLE notification_deliveries_legacy");
+      }
+    }
   } finally {
     db.exec("PRAGMA foreign_keys = ON");
   }
