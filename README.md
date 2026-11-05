@@ -1,6 +1,6 @@
 # Teens Aloud Foundation Member System
 
-Server-rendered Express + SQLite application for:
+Server-rendered Express application for:
 
 - an admin-only member directory and dashboard
 - fellowship pages and weekly attendance tracking, including a full present/absent history per member
@@ -13,7 +13,8 @@ Server-rendered Express + SQLite application for:
 - Node.js
 - Express
 - EJS templates
-- SQLite via `better-sqlite3`
+- SQLite via `better-sqlite3` for local development and tests
+- PostgreSQL via `pg` for hosted production (Neon supported)
 - Session authentication via `express-session`
 - Excel import/export via `exceljs`
 - CSRF protection and login rate limiting
@@ -42,24 +43,30 @@ For safety, the password is stored as a bcrypt hash in the database after first 
 
 Because access is shared, audit logs still record what happened, but no longer identify which individual person performed the action.
 
+If a database was bootstrapped with an unintended password, `src/reset-shared-access-password.js` can explicitly replace its hash. Provide `DATABASE_URL` and the intended `SHARED_ACCESS_PASSWORD` through a secure environment, then run `node src/reset-shared-access-password.js --apply`. The utility only updates the PostgreSQL setting, requires `--apply`, and never prints the password or hash.
+
 ## Production and hosting
 
-This project is prepared for deployment on Render with a persistent disk and a stable public URL.
+This project is prepared for deployment on Render with a stable public URL and Neon PostgreSQL.
 
 ### Render deployment
 
 1. Push this project to GitHub.
 2. Create a new Render Web Service from the repo.
-3. Ensure the service includes a persistent disk mounted at `/var/data`.
+3. Configure the Render service's `DATABASE_URL` with the Neon connection string, as a secret environment variable (never commit or print it).
 4. Set these environment variables:
    - `NODE_ENV=production`
    - `SESSION_SECRET=<a-long-random-secret>`
    - `SHARED_ACCESS_PASSWORD=<strong-shared-password>`
-   - `DATABASE_PATH=/var/data/teens-aloud.db`
-   - `DATA_DIR=/var/data`
-5. Deploy.
+5. Deploy only after the PostgreSQL app path has passed the target-database smoke tests.
 
-The Render blueprint in this repo is configured to mount the database disk at `/var/data` and back up the SQLite file in a daily cron job. The app refuses to start in production if `SESSION_SECRET` is missing, or if neither `SHARED_ACCESS_PASSWORD` nor the legacy `SUPER_ADMIN_PASSWORD` is set.
+Production refuses to start without `DATABASE_URL` and `SESSION_SECRET`; it never falls back to ephemeral SQLite. The app creates and versions its PostgreSQL schema during startup. Local development continues to use SQLite unless `DATABASE_URL` is set.
+
+### Database migration
+
+`src/migrate-sqlite-to-postgres.js` provides an explicit, transactional import path for a retained SQLite backup. It defaults to a read-only dry run; both a source path and a source label (`local` or `production`) are required, and `--apply` is required before any rows are imported. It never deletes or overwrites target rows and aborts on conflicting records. Do not select or import a source until the organization confirms which retained backup is authoritative.
+
+The authenticated `/settings/backup/download` route downloads a SQLite database file in local mode or a JSON table export in PostgreSQL mode. The former Render SQLite disk/cron backup has been removed; configure an external backup destination before relying on scheduled backups.
 
 ## Main routes
 

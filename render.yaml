@@ -11,21 +11,9 @@ services:
         value: production
       - key: HOST
         value: 0.0.0.0
-      - key: DATA_DIR
-        value: /var/data
-      - key: DATABASE_PATH
-        value: /var/data/teens-aloud.db
+      - key: DATABASE_URL
+        sync: false
       - key: SESSION_SECRET
         generateValue: true
       - key: SHARED_ACCESS_PASSWORD
         sync: false
-    disks:
-      - name: teens-aloud-data
-        mountPath: /var/data
-        sizeGB: 1
-
-cronJobs:
-  - name: taf-db-backup
-    schedule: "0 2 * * *"
-    command: "node src/backup-database.js"
-    env: node

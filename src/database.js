@@ -1,7 +1,12 @@
 const fs = require("node:fs");
 const path = require("node:path");
+const { AsyncLocalStorage } = require("node:async_hooks");
 const bcrypt = require("bcryptjs");
 const Database = require("better-sqlite3");
+const pg = require("pg");
+const { Pool } = pg;
+const { POSTGRES_SCHEMA } = require("./postgres-schema");
+const { translateSql } = require("./sql-adapter");
 const {
   COURSE_OPTIONS,
   LOVE_FELLOWSHIPS,
@@ -10,6 +15,10 @@ const {
 } = require("./constants");
 
 const isProduction = process.env.NODE_ENV === "production";
+const postgresMode = Boolean(process.env.DATABASE_URL);
+if (isProduction && !postgresMode) {
+  throw new Error("DATABASE_URL is required in production; SQLite fallback is disabled.");
+}
 const configuredDatabasePath = process.env.DATABASE_PATH;
 const dataDirectory = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
@@ -27,6 +36,10 @@ function resolveDatabasePath() {
     return defaultDatabasePath;
   }
 
+  if (configuredDatabasePath === ":memory:") {
+    return configuredDatabasePath;
+  }
+
   const candidate = path.resolve(configuredDatabasePath);
   try {
     const databaseDirectory = path.dirname(candidate);
@@ -42,15 +55,141 @@ function resolveDatabasePath() {
   }
 }
 
-const databasePath = resolveDatabasePath();
+const databasePath = postgresMode ? null : resolveDatabasePath();
 
-if (!fs.existsSync(path.dirname(databasePath))) {
+if (databasePath && !fs.existsSync(path.dirname(databasePath))) {
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
 }
 
-const db = new Database(databasePath);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
+const sqliteDb = postgresMode ? null : new Database(databasePath);
+if (sqliteDb) {
+  sqliteDb.pragma("journal_mode = WAL");
+  sqliteDb.pragma("foreign_keys = ON");
+}
+
+const pgPool = postgresMode
+  ? new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: process.env.DATABASE_SSL === "disable" ? false : { rejectUnauthorized: true },
+      max: Number(process.env.DATABASE_POOL_SIZE || 5),
+      idleTimeoutMillis: 30_000,
+      connectionTimeoutMillis: 10_000,
+    })
+  : null;
+const transactionContext = new AsyncLocalStorage();
+pg.types.setTypeParser(20, Number);
+pg.types.setTypeParser(1700, Number);
+const sqliteTransactionToken = Symbol("sqlite-transaction");
+let sqliteQueryQueue = Promise.resolve();
+
+async function withSqliteLock(operation) {
+  const previous = sqliteQueryQueue;
+  let release;
+  sqliteQueryQueue = new Promise((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+function createPostgresDatabase() {
+  const execute = (sql, params = []) => {
+    const client = transactionContext.getStore() || pgPool;
+    return client.query(translateSql(sql, true), params);
+  };
+  return {
+    prepare(sql) {
+      return {
+        async get(...params) {
+          const result = await execute(sql, params);
+          return result.rows[0];
+        },
+        async all(...params) {
+          const result = await execute(sql, params);
+          return result.rows;
+        },
+        async run(...params) {
+          let statement = sql.trim();
+          const returnsSerialId =
+            /^INSERT\b/i.test(statement) &&
+            !/^\s*INSERT\s+INTO\s+(?:app_settings|member_sub_ministries|schema_migrations)\b/i.test(statement);
+          if (returnsSerialId && !/\bRETURNING\b/i.test(statement)) {
+            statement = `${statement.replace(/;$/, "")} RETURNING id`;
+          }
+          const result = await execute(statement, params);
+          return {
+            changes: result.rowCount,
+            lastInsertRowid: result.rows[0]?.id == null ? undefined : Number(result.rows[0].id),
+          };
+        },
+      };
+    },
+    async exec(sql) {
+      await execute(sql);
+    },
+    transaction(callback) {
+      return async (...args) => {
+        const client = await pgPool.connect();
+        try {
+          await client.query("BEGIN");
+          const value = await transactionContext.run(client, () => callback(...args));
+          await client.query("COMMIT");
+          return value;
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
+      };
+    },
+    async close() {
+      await pgPool.end();
+    },
+  };
+}
+
+function createAsyncSqliteDatabase() {
+  const execute = (operation) =>
+    transactionContext.getStore() === sqliteTransactionToken
+      ? Promise.resolve(operation())
+      : withSqliteLock(operation);
+  return {
+    prepare(sql) {
+      const statement = sqliteDb.prepare(sql);
+      return {
+        get: (...params) => execute(() => statement.get(...params)),
+        all: (...params) => execute(() => statement.all(...params)),
+        run: (...params) => execute(() => statement.run(...params)),
+      };
+    },
+    exec: (sql) => execute(() => sqliteDb.exec(sql)),
+    transaction(callback) {
+      return async (...args) =>
+        withSqliteLock(async () => {
+          sqliteDb.exec("BEGIN IMMEDIATE");
+          try {
+            const result = await transactionContext.run(sqliteTransactionToken, () =>
+              callback(...args)
+            );
+            sqliteDb.exec("COMMIT");
+            return result;
+          } catch (error) {
+            sqliteDb.exec("ROLLBACK");
+            throw error;
+          }
+        });
+    },
+    close: () => sqliteDb.close(),
+  };
+}
+
+const postgresDb = postgresMode ? createPostgresDatabase() : null;
+const db = postgresMode ? postgresDb : createAsyncSqliteDatabase();
 
 function requireSharedAccessPassword() {
   const password =
@@ -67,7 +206,8 @@ function requireSharedAccessPassword() {
   return password;
 }
 
-function initializeDatabase() {
+function initializeSqliteDatabase() {
+  const db = sqliteDb;
   db.exec(`
     CREATE TABLE IF NOT EXISTS fellowships (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -306,7 +446,78 @@ function initializeDatabase() {
   seedSharedAccessPassword();
 }
 
+async function initializeDatabase() {
+  if (!postgresMode) {
+    initializeSqliteDatabase();
+    return;
+  }
+
+  await db.exec(POSTGRES_SCHEMA);
+  await db.prepare("INSERT INTO schema_migrations (version) VALUES (?) ON CONFLICT DO NOTHING").run(1);
+  await db.transaction(async () => {
+    const insertMany = async (table, columns, rows) => {
+      if (rows.length === 0) return;
+      const placeholders = rows.map(() => `(${columns.map(() => "?").join(", ")})`);
+      const values = rows.flat();
+      const sql = `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${placeholders.join(", ")} ON CONFLICT DO NOTHING`;
+      await db.prepare(sql).run(...values);
+    };
+
+    await insertMany("fellowships", ["name", "slug"], LOVE_FELLOWSHIPS.map((item) => [item.name, item.slug]));
+    await insertMany("sub_ministries", ["name"], SUB_MINISTRIES.map((name) => [name]));
+    await insertMany("courses", ["name"], COURSE_OPTIONS.map((name) => [name]));
+
+    const fellowships = await db.prepare("SELECT id, slug FROM fellowships ORDER BY id").all();
+    const fellowshipBySlug = new Map(fellowships.map((item) => [item.slug, item.id]));
+    const roles = buildRoleSeed(LOVE_FELLOWSHIPS).map((role) => {
+      const fellowshipId = role.fellowshipSlug
+        ? fellowshipBySlug.get(role.fellowshipSlug)
+        : null;
+      return [role.roleType, role.positionName, role.scopeType, role.displayName, fellowshipId];
+    });
+    await insertMany("roles", ["role_type", "position_name", "scope_type", "display_name", "fellowship_id"], roles);
+
+    const duplicateGroups = await db.prepare(`
+      SELECT role_type, position_name, scope_type, fellowship_id, MIN(id) AS keep_id
+      FROM roles
+      GROUP BY role_type, position_name, scope_type, fellowship_id
+      HAVING COUNT(*) > 1
+    `).all();
+    for (const group of duplicateGroups) {
+      const duplicates = await db.prepare(`
+        SELECT id FROM roles
+        WHERE role_type = ? AND position_name = ? AND scope_type = ?
+          AND fellowship_id IS NOT DISTINCT FROM ? AND id != ?
+        ORDER BY id
+      `).all(group.role_type, group.position_name, group.scope_type, group.fellowship_id, group.keep_id);
+      for (const { id } of duplicates) {
+        await db.prepare("UPDATE members SET role_id = ? WHERE role_id = ?").run(group.keep_id, id);
+        await db.prepare("DELETE FROM roles WHERE id = ?").run(id);
+      }
+    }
+
+    await db.prepare(`
+      INSERT INTO users (full_name, email, password_hash, access_role, fellowship_id, must_change_password)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING
+    `).run(
+      "Shared Access",
+      INTERNAL_ACTOR_EMAIL,
+      bcrypt.hashSync(requireSharedAccessPassword(), 10),
+      "system",
+      null,
+      0
+    );
+    await db.prepare(`
+      INSERT INTO app_settings (key, value) VALUES (?, ?) ON CONFLICT DO NOTHING
+    `).run(
+      SHARED_ACCESS_PASSWORD_KEY,
+      bcrypt.hashSync(requireSharedAccessPassword(), 10)
+    );
+  })();
+}
+
 function repairAttendanceRecordsForeignKeyReference() {
+  const db = sqliteDb;
   const attendanceTableExists = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'attendance_records'")
     .get();
@@ -359,6 +570,7 @@ function repairAttendanceRecordsForeignKeyReference() {
 }
 
 function repairMemberSubMinistriesForeignKeyReference() {
+  const db = sqliteDb;
   const linkTableExists = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'member_sub_ministries'")
     .get();
@@ -408,6 +620,7 @@ function repairMemberSubMinistriesForeignKeyReference() {
 }
 
 function repairMemberFellowshipTransfersForeignKeyReference() {
+  const db = sqliteDb;
   const transfersTableExists = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'member_fellowship_transfers'")
     .get();
@@ -463,6 +676,7 @@ function repairMemberFellowshipTransfersForeignKeyReference() {
 }
 
 function repairNotificationsForeignKeyReference() {
+  const db = sqliteDb;
   const notificationsTableExists = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'notifications'")
     .get();
@@ -570,6 +784,7 @@ function repairNotificationsForeignKeyReference() {
 }
 
 function migrateLegacySubMinistryAssignments() {
+  const db = sqliteDb;
   const tableExists = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'member_sub_ministries'")
     .get();
@@ -609,6 +824,7 @@ function migrateLegacySubMinistryAssignments() {
 // full table rebuild (rename -> recreate -> copy -> drop) is the standard
 // way to do this safely.
 function migrateMembersTableToRelaxedSchema() {
+  const db = sqliteDb;
   const membersTableExists = db
     .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'members'")
     .get();
@@ -722,6 +938,7 @@ function migrateMembersTableToRelaxedSchema() {
 }
 
 function seedReferenceData() {
+  const db = sqliteDb;
   const insertFellowship = db.prepare(
     "INSERT OR IGNORE INTO fellowships (name, slug) VALUES (?, ?)"
   );
@@ -778,6 +995,7 @@ function seedReferenceData() {
 // member role assignments pointing at the surviving row before we add an
 // expression-based unique index that collapses NULL fellowship scopes.
 function deduplicateRoles() {
+  const db = sqliteDb;
   const duplicateGroups = db.prepare(`
     SELECT
       role_type,
@@ -833,6 +1051,7 @@ function deduplicateRoles() {
 }
 
 function seedInternalActor() {
+  const db = sqliteDb;
   db.prepare(`
     INSERT OR IGNORE INTO users (full_name, email, password_hash, access_role, fellowship_id, must_change_password)
     VALUES (?, ?, ?, ?, ?, ?)
@@ -847,6 +1066,7 @@ function seedInternalActor() {
 }
 
 function seedSharedAccessPassword() {
+  const db = sqliteDb;
   db.prepare(`
     INSERT OR IGNORE INTO app_settings (key, value)
     VALUES (?, ?)
@@ -859,6 +1079,7 @@ function seedSharedAccessPassword() {
 module.exports = {
   db,
   databasePath,
+  postgresMode,
   initializeDatabase,
   INTERNAL_ACTOR_EMAIL,
   SHARED_ACCESS_PASSWORD_KEY,

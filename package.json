@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "node src/app.js",
-    "test": "node --check src/app.js && node --check src/database.js && node --check src/constants.js && node --check src/domain-utils.js && node --test --test-reporter=spec test/*.test.js"
+    "test": "node --check src/app.js && node --check src/database.js && node --check src/postgres-schema.js && node --check src/sql-adapter.js && node --check src/migrate-sqlite-to-postgres.js && node --check src/reset-shared-access-password.js && node --check src/constants.js && node --check src/domain-utils.js && node --test --test-reporter=spec test/*.test.js"
   },
   "keywords": [],
   "type": "commonjs",
@@ -21,6 +21,7 @@
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "express-session": "^1.19.0",
-    "multer": "^2.3.0"
+    "multer": "^2.3.0",
+    "pg": "^8.16.3"
   }
 }

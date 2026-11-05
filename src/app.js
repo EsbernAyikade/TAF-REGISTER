@@ -23,12 +23,13 @@ const {
 const {
   db,
   databasePath,
+  postgresMode,
   initializeDatabase,
   INTERNAL_ACTOR_EMAIL,
   SHARED_ACCESS_PASSWORD_KEY,
 } = require("./database");
 
-initializeDatabase();
+const databaseReady = initializeDatabase();
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
@@ -42,8 +43,8 @@ if (isProduction && !SESSION_SECRET) {
   throw new Error("SESSION_SECRET is required in production.");
 }
 
-function archiveMember(memberId, reason) {
-  db.prepare(
+async function archiveMember(memberId, reason) {
+  await (db.prepare(
     `
       UPDATE members
       SET archived_at = CURRENT_TIMESTAMP,
@@ -52,11 +53,11 @@ function archiveMember(memberId, reason) {
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `
-  ).run(reason || null, ARCHIVED_STATUS, memberId);
+  ).run(reason || null, ARCHIVED_STATUS, memberId));
 }
 
-function restoreMember(memberId) {
-  db.prepare(
+async function restoreMember(memberId) {
+  await (db.prepare(
     `
       UPDATE members
       SET archived_at = NULL,
@@ -65,7 +66,7 @@ function restoreMember(memberId) {
           updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `
-  ).run(ARCHIVED_STATUS, memberId);
+  ).run(ARCHIVED_STATUS, memberId));
 }
 
 app.set("trust proxy", 1);
@@ -122,10 +123,10 @@ app.use(express.static(path.join(__dirname, "..", "public")));
 
 app.locals.months = MONTHS;
 
-function getSharedAccessPasswordHash() {
-  const setting = db
+async function getSharedAccessPasswordHash() {
+  const setting = await (db
     .prepare("SELECT value FROM app_settings WHERE key = ?")
-    .get(SHARED_ACCESS_PASSWORD_KEY);
+    .get(SHARED_ACCESS_PASSWORD_KEY));
 
   if (!setting) {
     throw new Error("Shared access password has not been initialized.");
@@ -134,12 +135,12 @@ function getSharedAccessPasswordHash() {
   return setting.value;
 }
 
-function getInternalActorId() {
+async function getInternalActorId() {
   const actor =
-    db
+    await (db
       .prepare("SELECT id FROM users WHERE email = ?")
-      .get(INTERNAL_ACTOR_EMAIL) ||
-    db.prepare("SELECT id FROM users ORDER BY id LIMIT 1").get();
+      .get(INTERNAL_ACTOR_EMAIL)) ||
+    await (db.prepare("SELECT id FROM users ORDER BY id LIMIT 1").get());
 
   if (!actor) {
     throw new Error("No internal actor is available for shared-access actions.");
@@ -166,19 +167,19 @@ function isNewMember(joinedAt) {
   return Number.isFinite(days) && days >= 0 && days <= NEW_MEMBER_WINDOW_DAYS;
 }
 
-app.use((req, res, next) => {
+app.use(async (req, res, next) => {
   const user = req.session.isAuthenticated
-    ? { actorId: getInternalActorId() }
+    ? { actorId: await (getInternalActorId()) }
     : null;
 
-  const fellowships = db
+  const fellowships = await (db
     .prepare("SELECT id, name, slug FROM fellowships ORDER BY name")
-    .all();
-  const courses = db.prepare("SELECT id, name FROM courses ORDER BY name").all();
-  const subMinistries = db
+    .all());
+  const courses = await (db.prepare("SELECT id, name FROM courses ORDER BY name").all());
+  const subMinistries = await (db
     .prepare("SELECT id, name FROM sub_ministries ORDER BY name")
-    .all();
-  const hostelSuggestions = db
+    .all());
+  const hostelRows = await (db
     .prepare(
       `
         SELECT DISTINCT hostel
@@ -187,9 +188,9 @@ app.use((req, res, next) => {
         ORDER BY hostel
       `
     )
-    .all()
-    .map((row) => row.hostel);
-  const roles = db
+    .all());
+  const hostelSuggestions = hostelRows.map((row) => row.hostel);
+  const roles = await (db
     .prepare(
       `
         SELECT roles.id, roles.role_type, roles.position_name, roles.scope_type, roles.display_name,
@@ -199,7 +200,7 @@ app.use((req, res, next) => {
         ORDER BY roles.scope_type, roles.role_type, roles.display_name
       `
     )
-    .all();
+    .all());
 
   const dedupedRoles = Array.from(
     new Map(
@@ -224,7 +225,7 @@ app.use((req, res, next) => {
   }, {});
   roleCatalogByFellowship[""] = globalRoles;
 
-  const notifications = getNotifications(8);
+  const notifications = await (getNotifications(8));
   res.locals.currentUser = user;
   res.locals.isProduction = isProduction;
   res.locals.currentPath = req.path;
@@ -266,25 +267,25 @@ function setFlash(req, type, message) {
   }
 }
 
-function addNotification({ type = "info", title, message, link = null, memberId = null, fellowshipId = null, recipientUserId = null } = {}) {
+async function addNotification({ type = "info", title, message, link = null, memberId = null, fellowshipId = null, recipientUserId = null } = {}) {
   if (!title || !message) {
     return null;
   }
 
-  const result = db
+  const result = await (db
     .prepare(
       `
         INSERT INTO notifications (type, title, message, target_link, member_id, fellowship_id, recipient_user_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `
     )
-    .run(type, title, message, link || null, memberId || null, fellowshipId || null, recipientUserId || null);
+    .run(type, title, message, link || null, memberId || null, fellowshipId || null, recipientUserId || null));
 
   const id = result.lastInsertRowid;
 
   // Attempt delivery based on preferences (deferred/stubbed)
   try {
-    scheduleNotificationDelivery(id);
+    await (scheduleNotificationDelivery(id));
   } catch (e) {
     console.error('Failed to schedule notification delivery', e);
   }
@@ -292,9 +293,9 @@ function addNotification({ type = "info", title, message, link = null, memberId 
   return id;
 }
 
-function getNotifications(limit = 8, currentUserId = null) {
+async function getNotifications(limit = 8, currentUserId = null) {
   if (currentUserId) {
-    return db
+    return await (db
       .prepare(
         `
           SELECT id, type, title, message, target_link, member_id, fellowship_id, is_read, created_at
@@ -304,10 +305,10 @@ function getNotifications(limit = 8, currentUserId = null) {
           LIMIT ?
         `
       )
-      .all(currentUserId, limit);
+      .all(currentUserId, limit));
   }
 
-  return db
+  return await (db
     .prepare(
       `
         SELECT id, type, title, message, target_link, member_id, fellowship_id, is_read, created_at
@@ -316,10 +317,10 @@ function getNotifications(limit = 8, currentUserId = null) {
         LIMIT ?
       `
     )
-    .all(limit);
+    .all(limit));
 }
 
-function markNotificationsRead(ids) {
+async function markNotificationsRead(ids) {
   if (!Array.isArray(ids) || ids.length === 0) {
     return 0;
   }
@@ -330,17 +331,18 @@ function markNotificationsRead(ids) {
   }
 
   const placeholders = uniqueIds.map(() => "?").join(", ");
-  return db
+  const result = await db
     .prepare(`UPDATE notifications SET is_read = 1 WHERE id IN (${placeholders})`)
-    .run(...uniqueIds).changes;
+    .run(...uniqueIds);
+  return result.changes;
 }
 
 // Schedule/attempt delivery (very small stubbed system). Real email/SMS requires
 // configuration — for now this records attempts and logs if delivery would be sent.
-function scheduleNotificationDelivery(notificationId) {
-  const notification = db
+async function scheduleNotificationDelivery(notificationId) {
+  const notification = await (db
     .prepare('SELECT * FROM notifications WHERE id = ?')
-    .get(notificationId);
+    .get(notificationId));
   if (!notification) return;
 
   const recipients = [];
@@ -348,36 +350,36 @@ function scheduleNotificationDelivery(notificationId) {
     recipients.push(notification.recipient_user_id);
   } else {
     // pick internal user(s) as recipients: the shared-access internal actor
-    const internal = db.prepare('SELECT id, email FROM users WHERE email = ?').get(INTERNAL_ACTOR_EMAIL);
+    const internal = await (db.prepare('SELECT id, email FROM users WHERE email = ?').get(INTERNAL_ACTOR_EMAIL));
     if (internal) recipients.push(internal.id);
   }
 
-  recipients.forEach((userId) => {
-    const user = db.prepare('SELECT id, email, full_name FROM users WHERE id = ?').get(userId);
-    if (!user) return;
+  for (const userId of recipients) {
+    const user = await (db.prepare('SELECT id, email, full_name FROM users WHERE id = ?').get(userId));
+    if (!user) continue;
 
     // Check preferences (default to in_app only)
-    const pref = db.prepare('SELECT in_app, email, sms FROM notification_preferences WHERE user_id = ? AND event_type = ?').get(userId, notification.type);
+    const pref = await (db.prepare('SELECT in_app, email, sms FROM notification_preferences WHERE user_id = ? AND event_type = ?').get(userId, notification.type));
     const inApp = pref ? Boolean(pref.in_app) : true;
     const emailPref = pref ? Boolean(pref.email) : false;
     const smsPref = pref ? Boolean(pref.sms) : false;
 
     if (inApp) {
-      db.prepare('INSERT INTO notification_deliveries (notification_id, channel, recipient, status, details) VALUES (?, ?, ?, ?, ?)').run(notificationId, 'in_app', String(user.id), 'delivered', 'in-app');
+      await (db.prepare('INSERT INTO notification_deliveries (notification_id, channel, recipient, status, details) VALUES (?, ?, ?, ?, ?)').run(notificationId, 'in_app', String(user.id), 'delivered', 'in-app'));
     }
 
     if (emailPref && user.email) {
       // stubbed send
       console.log(`Sending email to ${user.email}: ${notification.title} — ${notification.message}`);
-      db.prepare('INSERT INTO notification_deliveries (notification_id, channel, recipient, status, details) VALUES (?, ?, ?, ?, ?)').run(notificationId, 'email', user.email, 'delivered', 'stubbed');
+      await (db.prepare('INSERT INTO notification_deliveries (notification_id, channel, recipient, status, details) VALUES (?, ?, ?, ?, ?)').run(notificationId, 'email', user.email, 'delivered', 'stubbed'));
     }
 
     if (smsPref) {
       // stubbed send
       console.log(`Sending SMS to ${user.id} for notification ${notification.id}: ${notification.title}`);
-      db.prepare('INSERT INTO notification_deliveries (notification_id, channel, recipient, status, details) VALUES (?, ?, ?, ?, ?)').run(notificationId, 'sms', String(user.id), 'delivered', 'stubbed');
+      await (db.prepare('INSERT INTO notification_deliveries (notification_id, channel, recipient, status, details) VALUES (?, ?, ?, ?, ?)').run(notificationId, 'sms', String(user.id), 'delivered', 'stubbed'));
     }
-  });
+  }
 }
 
 function requireAuth(req, res, next) {
@@ -392,14 +394,14 @@ function canManageFellowship(user, fellowshipId) {
   return Boolean(user);
 }
 
-function requireManagerForFellowship(req, res, next) {
+async function requireManagerForFellowship(req, res, next) {
   if (!req.currentUser) {
     return res.redirect("/login");
   }
 
-  const fellowship = db
+  const fellowship = await (db
     .prepare("SELECT id FROM fellowships WHERE slug = ?")
-    .get(req.params.slug);
+    .get(req.params.slug));
   if (!fellowship) {
     return res.status(404).render("pages/not-found", {
       pageTitle: "Not Found",
@@ -438,8 +440,8 @@ function getWeekLabel(weekStart, weekEnd) {
   return `${formatter.format(start)} - ${formatter.format(end)}`;
 }
 
-function getBirthdaysForWindow(daySpan) {
-  const members = db
+async function getBirthdaysForWindow(daySpan) {
+  const members = await (db
     .prepare(
       `
         SELECT members.id, members.full_name, members.birth_day, members.birth_month,
@@ -451,7 +453,7 @@ function getBirthdaysForWindow(daySpan) {
         ORDER BY members.birth_month, members.birth_day, members.full_name
       `
     )
-    .all();
+    .all());
 
   const today = new Date();
   return members
@@ -474,9 +476,9 @@ function getBirthdaysForWindow(daySpan) {
     .sort((a, b) => a.diffDays - b.diffDays || a.full_name.localeCompare(b.full_name));
 }
 
-function getBirthdaysThisMonth() {
+async function getBirthdaysThisMonth() {
   const month = new Date().getMonth() + 1;
-  return db
+  return await (db
     .prepare(
       `
         SELECT members.id, members.full_name, members.birth_day, members.birth_month,
@@ -487,15 +489,15 @@ function getBirthdaysThisMonth() {
         ORDER BY members.birth_day, members.full_name
       `
     )
-    .all(month);
+    .all(month));
 }
 
-function detectDuplicateMembers({ fullName, email, phone, memberId }) {
+async function detectDuplicateMembers({ fullName, email, phone, memberId }) {
   const normalizedName = String(fullName || "").trim();
   const normalizedEmail = String(email || "").trim().toLowerCase();
   const normalizedPhone = normalizePhone(phone);
 
-  const rows = db
+  const rows = await (db
     .prepare(
       `
         SELECT id, full_name, phone, email, fellowship_id
@@ -503,7 +505,7 @@ function detectDuplicateMembers({ fullName, email, phone, memberId }) {
         WHERE 1 = 1
       `
     )
-    .all();
+    .all());
 
   return rows.filter((row) => {
     if (memberId && Number(row.id) === Number(memberId)) {
@@ -528,14 +530,14 @@ function detectDuplicateMembers({ fullName, email, phone, memberId }) {
   });
 }
 
-function validateRoleForFellowship(roleId, fellowshipId) {
+async function validateRoleForFellowship(roleId, fellowshipId) {
   if (!roleId) {
     return true;
   }
 
-  const role = db
+  const role = await (db
     .prepare("SELECT fellowship_id, scope_type FROM roles WHERE id = ?")
-    .get(roleId);
+    .get(roleId));
 
   if (!role) {
     return false;
@@ -548,14 +550,14 @@ function validateRoleForFellowship(roleId, fellowshipId) {
   return true;
 }
 
-function getRoleDetails(roleId) {
+async function getRoleDetails(roleId) {
   if (!roleId) {
     return null;
   }
 
-  return db
+  return await (db
     .prepare("SELECT id, scope_type, fellowship_id FROM roles WHERE id = ?")
-    .get(roleId);
+    .get(roleId));
 }
 
 function parseCsvLine(line) {
@@ -628,12 +630,12 @@ function parseMemberPayload(body) {
 // data-quality reality, not something the app should block on. Anything else
 // provided is validated for correctness (a birthday, if given, must be a real
 // day/month combination), but nothing else is mandatory.
-function validateMemberPayload(payload) {
+async function validateMemberPayload(payload) {
   if (!payload.fullName) {
     return "A full name is required.";
   }
 
-  const selectedRole = getRoleDetails(payload.roleId);
+  const selectedRole = await (getRoleDetails(payload.roleId));
   if (payload.roleId && !selectedRole) {
     return "Please choose a valid role.";
   }
@@ -650,7 +652,7 @@ function validateMemberPayload(payload) {
     return "Please provide both a birth day and a birth month, or leave both blank.";
   }
 
-  if (payload.roleId && !validateRoleForFellowship(payload.roleId, payload.fellowshipId)) {
+  if (payload.roleId && !await (validateRoleForFellowship(payload.roleId, payload.fellowshipId))) {
     return "Selected role does not match the chosen Love Fellowship.";
   }
 
@@ -667,8 +669,8 @@ function parseBulkIds(rawIds) {
   return [Number(rawIds)].filter((id) => Number.isFinite(id) && id > 0);
 }
 
-function getMemberSubMinistryIds(memberId) {
-  const ids = db
+async function getMemberSubMinistryIds(memberId) {
+  const rows = await (db
     .prepare(
       `
         SELECT sub_ministry_id
@@ -677,47 +679,49 @@ function getMemberSubMinistryIds(memberId) {
         ORDER BY sub_ministry_id
       `
     )
-    .all(memberId)
-    .map((row) => Number(row.sub_ministry_id));
+    .all(memberId));
+  const ids = rows.map((row) => Number(row.sub_ministry_id));
 
   if (ids.length > 0) {
     return ids;
   }
 
-  const legacy = db
+  const legacy = await (db
     .prepare("SELECT sub_ministry_id FROM members WHERE id = ? AND sub_ministry_id IS NOT NULL")
-    .get(memberId);
+    .get(memberId));
 
   return legacy && legacy.sub_ministry_id ? [Number(legacy.sub_ministry_id)] : [];
 }
 
-function setMemberSubMinistries(memberId, subMinistryIds) {
+async function setMemberSubMinistries(memberId, subMinistryIds) {
   const normalizedIds = [...new Set(subMinistryIds.filter((id) => Number.isFinite(id) && id > 0))];
 
-  db.prepare("DELETE FROM member_sub_ministries WHERE member_id = ?").run(memberId);
+  await (db.prepare("DELETE FROM member_sub_ministries WHERE member_id = ?").run(memberId));
 
   if (normalizedIds.length > 0) {
     const insertLink = db.prepare(
       "INSERT INTO member_sub_ministries (member_id, sub_ministry_id) VALUES (?, ?)"
     );
-    normalizedIds.forEach((subMinistryId) => insertLink.run(memberId, subMinistryId));
+    for (const subMinistryId of normalizedIds) {
+      await insertLink.run(memberId, subMinistryId);
+    }
   }
 
   const primaryId = normalizedIds.length === 1 ? normalizedIds[0] : null;
-  db.prepare("UPDATE members SET sub_ministry_id = ? WHERE id = ?").run(primaryId, memberId);
+  await (db.prepare("UPDATE members SET sub_ministry_id = ? WHERE id = ?").run(primaryId, memberId));
 }
 
 function formatBirthdayForExport(birthDay, birthMonth) {
   return birthDay && birthMonth ? `${birthDay}/${birthMonth}` : "";
 }
 
-function logAudit(userId, action, entityType, entityId, details) {
-  db.prepare(
+async function logAudit(userId, action, entityType, entityId, details) {
+  await (db.prepare(
     `
       INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
       VALUES (?, ?, ?, ?, ?)
     `
-  ).run(userId || null, action, entityType, entityId || null, details || null);
+  ).run(userId || null, action, entityType, entityId || null, details || null));
 }
 
 function buildAttendanceInsights(attendanceHistory) {
@@ -876,8 +880,8 @@ function buildMembersQuery(filters) {
   return { sql, params };
 }
 
-function getMemberWithDetails(memberId) {
-  return db
+async function getMemberWithDetails(memberId) {
+  return await (db
     .prepare(
       `
         SELECT members.*,
@@ -907,7 +911,7 @@ function getMemberWithDetails(memberId) {
         WHERE members.id = ?
       `
     )
-    .get(memberId);
+    .get(memberId));
 }
 
 function canManageMember(user, member) {
@@ -924,8 +928,8 @@ function serializeFilters(query) {
   return params.toString();
 }
 
-function getAttendanceSummaryForWeek(weekStart) {
-  return db
+async function getAttendanceSummaryForWeek(weekStart) {
+  const rows = await db
     .prepare(
       `
         SELECT fellowships.id,
@@ -947,20 +951,20 @@ function getAttendanceSummaryForWeek(weekStart) {
         ORDER BY fellowships.name
       `
     )
-    .all(weekStart)
-    .map((row) => ({
+    .all(weekStart);
+  return rows.map((row) => ({
       ...row,
       rate: row.member_total ? Math.round((row.present_total / row.member_total) * 100) : 0,
       headline: `${row.present_total} member${row.present_total === 1 ? "" : "s"} attended ${row.name} this week`,
     }));
 }
 
-function getCurrentAbsenceStreak(memberId, fellowshipId) {
+async function getCurrentAbsenceStreak(memberId, fellowshipId) {
   if (!memberId || !fellowshipId) {
     return { streak: 0, mostRecentWeek: null };
   }
 
-  const history = db
+  const history = await (db
     .prepare(
       `
         SELECT attendance_sessions.week_start, attendance_records.present
@@ -972,7 +976,7 @@ function getCurrentAbsenceStreak(memberId, fellowshipId) {
         ORDER BY attendance_sessions.week_start DESC
       `
     )
-    .all(memberId, fellowshipId);
+    .all(memberId, fellowshipId));
 
   let streak = 0;
   for (const entry of history) {
@@ -988,7 +992,7 @@ function getCurrentAbsenceStreak(memberId, fellowshipId) {
   };
 }
 
-function getGoingQuietMembers({ minStreak = 3, fellowshipId = null } = {}) {
+async function getGoingQuietMembers({ minStreak = 3, fellowshipId = null } = {}) {
   const query = fellowshipId
     ? `
         SELECT members.id, members.full_name, members.joined_at, members.fellowship_id,
@@ -1009,18 +1013,18 @@ function getGoingQuietMembers({ minStreak = 3, fellowshipId = null } = {}) {
       `;
 
   const members = fellowshipId
-    ? db.prepare(query).all(fellowshipId)
-    : db.prepare(query).all();
+    ? await (db.prepare(query).all(fellowshipId))
+    : await (db.prepare(query).all());
 
-  return members
-    .map((member) => {
-      const absence = getCurrentAbsenceStreak(member.id, member.fellowship_id);
-      return {
-        ...member,
-        absenceStreak: absence.streak,
-        mostRecentWeek: absence.mostRecentWeek,
-      };
-    })
+  const withAbsence = await Promise.all(members.map(async (member) => {
+    const absence = await (getCurrentAbsenceStreak(member.id, member.fellowship_id));
+    return {
+      ...member,
+      absenceStreak: absence.streak,
+      mostRecentWeek: absence.mostRecentWeek,
+    };
+  }));
+  return withAbsence
     .filter((member) => member.absenceStreak >= minStreak)
     .sort(
       (a, b) =>
@@ -1030,8 +1034,8 @@ function getGoingQuietMembers({ minStreak = 3, fellowshipId = null } = {}) {
     );
 }
 
-function getNewMembersForOnboarding() {
-  return db
+async function getNewMembersForOnboarding() {
+  const members = await (db
     .prepare(
       `
         SELECT members.id, members.full_name, members.joined_at,
@@ -1043,8 +1047,8 @@ function getNewMembersForOnboarding() {
         ORDER BY members.joined_at DESC
       `
     )
-    .all()
-    .map((member) => ({
+    .all());
+  return members.map((member) => ({
       ...member,
       daysSinceJoined: getDaysSince(member.joined_at),
     }))
@@ -1052,8 +1056,8 @@ function getNewMembersForOnboarding() {
     .sort((a, b) => a.daysSinceJoined - b.daysSinceJoined);
 }
 
-function getLatestAwayListForFellowship(fellowshipId) {
-  const latestSession = db
+async function getLatestAwayListForFellowship(fellowshipId) {
+  const latestSession = await (db
     .prepare(
       `
         SELECT id, week_start, week_end
@@ -1063,13 +1067,13 @@ function getLatestAwayListForFellowship(fellowshipId) {
         LIMIT 1
       `
     )
-    .get(fellowshipId);
+    .get(fellowshipId));
 
   if (!latestSession) {
     return { session: null, absentMembers: [] };
   }
 
-  const absentMembers = db
+  const absentMembers = await (db
     .prepare(
       `
         SELECT members.id, members.full_name, members.phone, members.hostel, members.room_no
@@ -1080,7 +1084,7 @@ function getLatestAwayListForFellowship(fellowshipId) {
         ORDER BY members.full_name
       `
     )
-    .all(latestSession.id);
+    .all(latestSession.id));
 
   return { session: latestSession, absentMembers };
 }
@@ -1123,9 +1127,9 @@ app.get("/members/new", requireAuth, (req, res) => {
   });
 });
 
-app.post("/members/new", requireAuth, (req, res) => {
+app.post("/members/new", requireAuth, async (req, res) => {
   const payload = parseMemberPayload(req.body);
-  const validationError = validateMemberPayload(payload);
+  const validationError = await (validateMemberPayload(payload));
 
   if (validationError) {
     setFlash(req, "error", validationError);
@@ -1152,14 +1156,14 @@ app.post("/members/new", requireAuth, (req, res) => {
     });
   }
 
-  const duplicates = detectDuplicateMembers(payload);
+  const duplicates = await (detectDuplicateMembers(payload));
   const duplicateNotes = duplicates.length
     ? duplicates
         .map((item) => `${item.full_name} (${item.email}, ${item.phone})`)
         .join("; ")
     : null;
 
-  const result = db
+  const result = await (db
     .prepare(
       `
         INSERT INTO members (
@@ -1188,14 +1192,14 @@ app.post("/members/new", requireAuth, (req, res) => {
       payload.status,
       duplicates.length ? 1 : 0,
       duplicateNotes
-    );
+    ));
 
   if (payload.subMinistryIds.length > 0) {
-    setMemberSubMinistries(result.lastInsertRowid, payload.subMinistryIds);
+    await (setMemberSubMinistries(result.lastInsertRowid, payload.subMinistryIds));
   }
 
-  logAudit(null, "member_added", "member", result.lastInsertRowid, duplicateNotes);
-  addNotification({
+  await (logAudit(null, "member_added", "member", result.lastInsertRowid, duplicateNotes));
+  await (addNotification({
     type: duplicates.length ? "warning" : "success",
     title: duplicates.length ? "Duplicate review needed" : "Member added",
     message: duplicates.length
@@ -1203,7 +1207,7 @@ app.post("/members/new", requireAuth, (req, res) => {
       : `${payload.fullName} was added to the directory.`,
     link: `/members/${result.lastInsertRowid}`,
     memberId: result.lastInsertRowid,
-  });
+  }));
 
   setFlash(
     req,
@@ -1226,28 +1230,28 @@ app.get("/login", (req, res) => {
   });
 });
 
-app.post("/login", loginLimiter, (req, res) => {
+app.post("/login", loginLimiter, async (req, res) => {
   const password = String(req.body.password || "");
 
-  if (!bcrypt.compareSync(password, getSharedAccessPasswordHash())) {
+  if (!bcrypt.compareSync(password, await (getSharedAccessPasswordHash()))) {
     setFlash(req, "error", "Invalid password.");
     return res.redirect("/login");
   }
 
   req.session.isAuthenticated = true;
-  logAudit(null, "login", "session", null, "Shared password login");
+  await (logAudit(null, "login", "session", null, "Shared password login"));
   setFlash(req, "success", "Welcome back.");
   return res.redirect("/dashboard");
 });
 
-app.post("/notifications/mark-read", requireAuth, (req, res) => {
+app.post("/notifications/mark-read", requireAuth, async (req, res) => {
   const notificationIds = parseBulkIds(req.body.notificationIds);
-  markNotificationsRead(notificationIds);
+  await (markNotificationsRead(notificationIds));
   return res.redirect(req.get("Referer") || "/dashboard");
 });
 
-app.get("/notifications", requireAuth, (req, res) => {
-  const notifications = db
+app.get("/notifications", requireAuth, async (req, res) => {
+  const notifications = await (db
     .prepare(
       `
         SELECT id, type, title, message, target_link, member_id, fellowship_id, is_read, created_at
@@ -1256,7 +1260,7 @@ app.get("/notifications", requireAuth, (req, res) => {
         LIMIT 200
       `
     )
-    .all();
+    .all());
 
   res.render("pages/notifications", {
     pageTitle: "Notifications",
@@ -1265,10 +1269,16 @@ app.get("/notifications", requireAuth, (req, res) => {
   });
 });
 
-app.get("/settings", requireAuth, (req, res) => {
+app.get("/settings", requireAuth, async (req, res) => {
+  const notificationPreferences = await db.prepare(`
+    SELECT id, user_id, event_type, in_app, email, sms
+    FROM notification_preferences
+    WHERE user_id = (SELECT id FROM users WHERE email = ? LIMIT 1)
+  `).all(INTERNAL_ACTOR_EMAIL);
   res.render("pages/settings", {
     pageTitle: "Settings",
     csrfToken: res.locals.csrfToken,
+    notificationPreferences,
   });
 });
 
@@ -1279,7 +1289,7 @@ app.get("/account/change-password", requireAuth, (req, res) => {
   });
 });
 
-app.post("/account/change-password", requireAuth, (req, res) => {
+app.post("/account/change-password", requireAuth, async (req, res) => {
   const password = String(req.body.password || "");
   const confirm = String(req.body.confirmPassword || "");
 
@@ -1293,37 +1303,38 @@ app.post("/account/change-password", requireAuth, (req, res) => {
     return res.redirect("/account/change-password");
   }
 
-  db.prepare(
+  await (db.prepare(
     `
       UPDATE app_settings
       SET value = ?, updated_at = CURRENT_TIMESTAMP
       WHERE key = ?
     `
-  ).run(bcrypt.hashSync(password, 10), SHARED_ACCESS_PASSWORD_KEY);
+  ).run(bcrypt.hashSync(password, 10), SHARED_ACCESS_PASSWORD_KEY));
 
-  logAudit(null, "access_password_changed", "setting", null, null);
+  await (logAudit(null, "access_password_changed", "setting", null, null));
   setFlash(req, "success", "The access password has been updated.");
   return res.redirect("/dashboard");
 });
 
-app.post("/logout", requireAuth, (req, res) => {
-  logAudit(null, "logout", "session", null, "Shared password logout");
+app.post("/logout", requireAuth, async (req, res) => {
+  await (logAudit(null, "logout", "session", null, "Shared password logout"));
   req.session.destroy(() => {
     res.redirect("/login");
   });
 });
 
-app.get("/dashboard", requireAuth, (req, res) => {
+app.get("/dashboard", requireAuth, async (req, res) => {
   const currentWeekStart = getWeekStart();
   const currentWeekEnd = getWeekEnd(currentWeekStart);
   const memberVisibilityCondition = "WHERE 1 = 1";
   const statsParams = [];
 
-  const totalMembers = db
+  const totalMembersRow = await db
     .prepare(`SELECT COUNT(*) AS count FROM members ${memberVisibilityCondition} AND archived_at IS NULL`)
-    .get(...statsParams).count;
+    .get(...statsParams);
+  const totalMembers = Number(totalMembersRow.count);
 
-  const genderStats = db
+  const genderStats = await (db
     .prepare(
       `
         SELECT COALESCE(NULLIF(gender, ''), 'Unspecified') AS gender, COUNT(*) AS count
@@ -1333,9 +1344,9 @@ app.get("/dashboard", requireAuth, (req, res) => {
         ORDER BY count DESC, gender
       `
     )
-    .all(...statsParams);
+    .all(...statsParams));
 
-  const subMinistryStats = db
+  const subMinistryStats = await (db
     .prepare(
       `
         WITH member_sub_ministry_counts AS (
@@ -1363,9 +1374,9 @@ app.get("/dashboard", requireAuth, (req, res) => {
         ORDER BY count DESC, name
       `
     )
-    .all(...statsParams);
+    .all(...statsParams));
 
-  const fellowshipStats = db
+  const fellowshipStats = await (db
     .prepare(
       `
         SELECT fellowships.name, fellowships.slug, COUNT(members.id) AS count
@@ -1378,29 +1389,29 @@ app.get("/dashboard", requireAuth, (req, res) => {
         ORDER BY fellowships.name
       `
     )
-    .all();
+    .all());
 
-  const birthdaysThisWeek = getBirthdaysForWindow(6);
-  const birthdaysThisMonth = getBirthdaysThisMonth();
-  const attendanceSummary = getAttendanceSummaryForWeek(currentWeekStart);
+  const birthdaysThisWeek = await (getBirthdaysForWindow(6));
+  const birthdaysThisMonth = await (getBirthdaysThisMonth());
+  const attendanceSummary = await (getAttendanceSummaryForWeek(currentWeekStart));
   const totalAttendanceThisWeek = attendanceSummary.reduce(
     (sum, item) => sum + item.present_total,
     0
   );
-  const goingQuietMembers = getGoingQuietMembers({ minStreak: 3 });
-  const newOnboardingMembers = getNewMembersForOnboarding();
-  const awayThisWeekSummary = db
+  const goingQuietMembers = await (getGoingQuietMembers({ minStreak: 3 }));
+  const newOnboardingMembers = await (getNewMembersForOnboarding());
+  const fellowshipsForAwaySummary = await (db
     .prepare("SELECT id, name, slug FROM fellowships ORDER BY name")
-    .all()
-    .map((fellowship) => {
-      const away = getLatestAwayListForFellowship(fellowship.id);
+    .all());
+  const awayThisWeekSummary = await Promise.all(fellowshipsForAwaySummary.map(async (fellowship) => {
+      const away = await (getLatestAwayListForFellowship(fellowship.id));
       return {
         ...fellowship,
         weekStart: away.session ? away.session.week_start : null,
         weekEnd: away.session ? away.session.week_end : null,
         absentCount: away.absentMembers.length,
       };
-    });
+  }));
 
   res.render("pages/dashboard", {
     pageTitle: "Dashboard",
@@ -1421,7 +1432,7 @@ app.get("/dashboard", requireAuth, (req, res) => {
   });
 });
 
-app.get("/members", requireAuth, (req, res) => {
+app.get("/members", requireAuth, async (req, res) => {
   const filters = {
     search: String(req.query.search || "").trim(),
     fellowshipId: req.query.fellowshipId ? Number(req.query.fellowshipId) : null,
@@ -1437,7 +1448,7 @@ app.get("/members", requireAuth, (req, res) => {
   };
 
   const { sql, params } = buildMembersQuery(filters);
-  const members = db.prepare(sql).all(...params);
+  const members = await (db.prepare(sql).all(...params));
 
   res.render("pages/members", {
     pageTitle: "Member Directory",
@@ -1460,7 +1471,7 @@ app.get("/members", requireAuth, (req, res) => {
   });
 });
 
-app.post("/members/bulk-edit", requireAuth, (req, res) => {
+app.post("/members/bulk-edit", requireAuth, async (req, res) => {
   const selectedIds = [...new Set(parseBulkIds(req.body.memberIds))];
   if (selectedIds.length === 0) {
     setFlash(req, "warning", "Select at least one member before bulk editing.");
@@ -1475,9 +1486,9 @@ app.post("/members/bulk-edit", requireAuth, (req, res) => {
   }
 
   const placeholders = selectedIds.map(() => "?").join(",");
-  const members = db
+  const members = await (db
     .prepare(`SELECT id, full_name FROM members WHERE id IN (${placeholders})`)
-    .all(...selectedIds);
+    .all(...selectedIds));
   if (members.length === 0) {
     setFlash(req, "error", "No valid members were selected.");
     return res.redirect("/members");
@@ -1490,46 +1501,46 @@ app.post("/members/bulk-edit", requireAuth, (req, res) => {
       return res.redirect("/members");
     }
 
-    db.transaction(() => {
-      members.forEach((member) => {
-        db.prepare(
+    await (db.transaction(async () => {
+      for (const member of members) {
+        await (db.prepare(
           "UPDATE members SET fellowship_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-        ).run(fellowshipId, member.id);
-      });
-    })();
+        ).run(fellowshipId, member.id));
+      }
+    })());
   } else if (action === "status") {
     if (!MEMBER_STATUSES.includes(value)) {
       setFlash(req, "error", "Select a valid status.");
       return res.redirect("/members");
     }
-    db.prepare(
+    await (db.prepare(
       `UPDATE members SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`
-    ).run(value, ...selectedIds);
+    ).run(value, ...selectedIds));
   } else if (action === "level") {
     if (!value) {
       setFlash(req, "error", "Select a level.");
       return res.redirect("/members");
     }
-    db.prepare(
+    await (db.prepare(
       `UPDATE members SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id IN (${placeholders})`
-    ).run(value, ...selectedIds);
+    ).run(value, ...selectedIds));
   } else if (action === "subMinistry") {
     const subMinistryId = Number(value);
     if (!Number.isFinite(subMinistryId) || subMinistryId <= 0) {
       setFlash(req, "error", "Select a valid sub-ministry.");
       return res.redirect("/members");
     }
-    db.transaction(() => {
-      members.forEach((member) => {
-        setMemberSubMinistries(member.id, [subMinistryId]);
-      });
-    })();
+    await (db.transaction(async () => {
+      for (const member of members) {
+        await (setMemberSubMinistries(member.id, [subMinistryId]));
+      }
+    })());
   } else {
     setFlash(req, "error", "Unsupported bulk action.");
     return res.redirect("/members");
   }
 
-  logAudit(null, "members_bulk_edited", "member", null, `${action}:${value}; count=${members.length}`);
+  await (logAudit(null, "members_bulk_edited", "member", null, `${action}:${value}; count=${members.length}`));
   setFlash(req, "success", `Bulk update applied to ${members.length} member(s).`);
   return res.redirect("/members");
 });
@@ -1544,10 +1555,10 @@ function addDaysToIsoDate(isoDate, days) {
 // fellowship, so uploading the same fellowship's register again next month
 // updates the same people instead of creating duplicates. Prefers an exact
 // phone match (most reliable), falling back to fuzzy name matching.
-function findExistingMemberInFellowship(fellowshipId, fullName, phone) {
-  const candidates = db
+async function findExistingMemberInFellowship(fellowshipId, fullName, phone) {
+  const candidates = await (db
     .prepare("SELECT id, full_name, phone FROM members WHERE fellowship_id = ?")
-    .all(fellowshipId);
+    .all(fellowshipId));
 
   const normalizedPhone = normalizePhone(phone);
   if (normalizedPhone) {
@@ -1802,10 +1813,10 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
       const flaggedDuplicates = [];
       const skipped = [];
 
-      parsed.dataRows.forEach((row) => {
+      for (const row of parsed.dataRows) {
         const fullName = String(row.name || "").trim();
         if (!fullName) {
-          return;
+          continue;
         }
 
         const { day, month } = parseDayMonth(row.birthday);
@@ -1816,10 +1827,11 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
               .map((value) => value.trim())
               .filter(Boolean)
           : [];
-        const subMinistryIds = subMinistryNames
-          .map((name) => db.prepare("SELECT id FROM sub_ministries WHERE LOWER(name) = LOWER(?)").get(name))
-          .filter(Boolean)
-          .map((rowEntry) => rowEntry.id);
+        const subMinistryIds = [];
+        for (const name of subMinistryNames) {
+          const rowEntry = await (db.prepare("SELECT id FROM sub_ministries WHERE LOWER(name) = LOWER(?)").get(name));
+          if (rowEntry) subMinistryIds.push(rowEntry.id);
+        }
 
         const memberPayload = {
           fullName,
@@ -1837,17 +1849,17 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
           status: "Active",
         };
 
-        const validationError = validateMemberPayload(memberPayload);
+        const validationError = await (validateMemberPayload(memberPayload));
         if (validationError) {
           skipped.push({ line: row.rowNumber, name: fullName, reason: validationError });
           return;
         }
 
-        const duplicates = detectDuplicateMembers(memberPayload);
-        const existingMember = findExistingMemberInFellowship(fellowshipId, fullName, row.phone || "");
+        const duplicates = await (detectDuplicateMembers(memberPayload));
+        const existingMember = await (findExistingMemberInFellowship(fellowshipId, fullName, row.phone || ""));
 
         if (existingMember) {
-          db.prepare(
+          await (db.prepare(
             `
               UPDATE members SET
                 full_name = ?,
@@ -1876,9 +1888,9 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
             row.email || null,
             level || null,
             existingMember.id
-          );
+          ));
           if (subMinistryIds.length > 0) {
-            setMemberSubMinistries(existingMember.id, subMinistryIds);
+            await (setMemberSubMinistries(existingMember.id, subMinistryIds));
           }
           if (duplicates.length) {
             flaggedDuplicates.push(fullName);
@@ -1888,7 +1900,7 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
           return;
         }
 
-        const result = db
+        const result = await (db
           .prepare(
             `
               INSERT INTO members (
@@ -1914,10 +1926,10 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
             level || null,
             duplicates.length ? 1 : 0,
             duplicates.length ? duplicates.map((duplicate) => duplicate.full_name).join("; ") : null
-          );
+          ));
 
         if (subMinistryIds.length > 0) {
-          setMemberSubMinistries(result.lastInsertRowid, subMinistryIds);
+          await (setMemberSubMinistries(result.lastInsertRowid, subMinistryIds));
         }
 
         if (duplicates.length) {
@@ -1925,10 +1937,10 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
         } else {
           inserted.push(fullName);
         }
-      });
+      }
 
       const totalProcessed = inserted.length + flaggedDuplicates.length;
-      logAudit(null, "members_imported", "member", null, `${totalProcessed} imported, ${skipped.length} skipped`);
+      await (logAudit(null, "members_imported", "member", null, `${totalProcessed} imported, ${skipped.length} skipped`));
       setFlash(
         req,
         skipped.length > 0 ? "warning" : "success",
@@ -1962,22 +1974,22 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
     const skipped = [];
 
     const sessionIdByWeekNumber = {};
-    parsed.activeWeekNumbers.forEach((weekNumber) => {
+    for (const weekNumber of parsed.activeWeekNumbers) {
       const weekStart = addDaysToIsoDate(weekOneStart, 7 * (weekNumber - 1));
       const weekEnd = getWeekEnd(weekStart);
-      db.prepare(
+      await (db.prepare(
         `
           INSERT INTO attendance_sessions (fellowship_id, week_start, week_end, recorded_by_user_id)
           VALUES (?, ?, ?, ?)
           ON CONFLICT(fellowship_id, week_start)
           DO UPDATE SET week_end = excluded.week_end, updated_at = CURRENT_TIMESTAMP
         `
-      ).run(fellowshipId, weekStart, weekEnd, req.currentUser.actorId);
-      const session = db
+      ).run(fellowshipId, weekStart, weekEnd, req.currentUser.actorId));
+      const session = await (db
         .prepare("SELECT id FROM attendance_sessions WHERE fellowship_id = ? AND week_start = ?")
-        .get(fellowshipId, weekStart);
+        .get(fellowshipId, weekStart));
       sessionIdByWeekNumber[weekNumber] = session.id;
-    });
+    }
 
     const upsertAttendance = db.prepare(
       `
@@ -1988,7 +2000,7 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
       `
     );
 
-    parsed.dataRows.forEach((row) => {
+    for (const row of parsed.dataRows) {
       const { day, month } = parseDayMonth(row.birthday);
       const level = levelFromYear(row.year);
       const subMinistryNames = row.subMinistry
@@ -1997,15 +2009,16 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
             .map((value) => value.trim())
             .filter(Boolean)
         : [];
-      const subMinistryIds = subMinistryNames
-        .map((name) => db.prepare("SELECT id FROM sub_ministries WHERE LOWER(name) = LOWER(?)").get(name))
-        .filter(Boolean)
-        .map((rowEntry) => rowEntry.id);
+      const subMinistryIds = [];
+      for (const name of subMinistryNames) {
+        const rowEntry = await (db.prepare("SELECT id FROM sub_ministries WHERE LOWER(name) = LOWER(?)").get(name));
+        if (rowEntry) subMinistryIds.push(rowEntry.id);
+      }
 
-      let member = findExistingMemberInFellowship(fellowshipId, row.name, row.phone);
+      let member = await (findExistingMemberInFellowship(fellowshipId, row.name, row.phone));
 
       if (member) {
-        db.prepare(
+        await (db.prepare(
           `
             UPDATE members SET
               hostel = COALESCE(NULLIF(hostel, ''), ?),
@@ -2017,13 +2030,13 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
               updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
           `
-        ).run(row.hostel || null, row.roomNo || null, day, month, level || null, row.phone || null, member.id);
+        ).run(row.hostel || null, row.roomNo || null, day, month, level || null, row.phone || null, member.id));
         if (subMinistryIds.length > 0) {
-          setMemberSubMinistries(member.id, subMinistryIds);
+          await (setMemberSubMinistries(member.id, subMinistryIds));
         }
         membersMatched += 1;
       } else {
-        const result = db
+        const result = await (db
           .prepare(
             `
               INSERT INTO members (
@@ -2043,27 +2056,27 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
             subMinistryIds.length === 1 ? subMinistryIds[0] : null,
             fellowshipId,
             row.phone || null
-          );
+          ));
         member = { id: result.lastInsertRowid };
         if (subMinistryIds.length > 0) {
-          setMemberSubMinistries(member.id, subMinistryIds);
+          await (setMemberSubMinistries(member.id, subMinistryIds));
         }
         membersCreated += 1;
       }
 
-      parsed.activeWeekNumbers.forEach((weekNumber) => {
-        upsertAttendance.run(sessionIdByWeekNumber[weekNumber], member.id, row.weeks[weekNumber] ? 1 : 0);
+      for (const weekNumber of parsed.activeWeekNumbers) {
+        await upsertAttendance.run(sessionIdByWeekNumber[weekNumber], member.id, row.weeks[weekNumber] ? 1 : 0);
         attendanceMarksRecorded += 1;
-      });
-    });
+      }
+    }
 
-    logAudit(
+    await (logAudit(
       null,
       "attendance_register_imported",
       "fellowship",
       fellowshipId,
       `${membersCreated} created, ${membersMatched} matched, ${parsed.activeWeekNumbers.length} week(s), ${attendanceMarksRecorded} marks`
-    );
+    ));
 
     setFlash(
       req,
@@ -2125,14 +2138,14 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
       continue;
     }
 
-    const validationError = validateMemberPayload(memberPayload);
+    const validationError = await (validateMemberPayload(memberPayload));
     if (validationError) {
       skipped.push({ line: lineNumber, name: rowLabel, reason: validationError });
       continue;
     }
 
-    const duplicates = detectDuplicateMembers(memberPayload);
-    db.prepare(
+    const duplicates = await (detectDuplicateMembers(memberPayload));
+    await (db.prepare(
       `
         INSERT INTO members (
           full_name, gender, birth_day, birth_month, hostel,
@@ -2158,7 +2171,7 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
       memberPayload.status,
       duplicates.length ? 1 : 0,
       duplicates.length ? duplicates.map((duplicate) => duplicate.full_name).join("; ") : null
-    );
+    ));
 
     if (duplicates.length) {
       flaggedDuplicates.push(rowLabel);
@@ -2167,13 +2180,13 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
     }
   }
 
-  logAudit(
+  await (logAudit(
     null,
     "members_imported",
     "member",
     null,
     `${inserted.length + flaggedDuplicates.length} inserted, ${skipped.length} skipped`
-  );
+  ));
 
   const totalProcessed = inserted.length + flaggedDuplicates.length;
   setFlash(
@@ -2189,8 +2202,8 @@ app.post("/members/import", requireAuth, upload.single("importFile"), csrfProtec
   });
 });
 
-app.get("/members/:id", requireAuth, (req, res) => {
-  const member = getMemberWithDetails(Number(req.params.id));
+app.get("/members/:id", requireAuth, async (req, res) => {
+  const member = await (getMemberWithDetails(Number(req.params.id)));
   if (!member) {
     return res.status(404).render("pages/not-found", {
       pageTitle: "Member Not Found",
@@ -2200,7 +2213,7 @@ app.get("/members/:id", requireAuth, (req, res) => {
     });
   }
 
-  const attendanceStats = db
+  const attendanceStats = await (db
     .prepare(
       `
         SELECT
@@ -2213,9 +2226,9 @@ app.get("/members/:id", requireAuth, (req, res) => {
         WHERE attendance_sessions.fellowship_id = ?
       `
     )
-    .get(member.id, member.fellowship_id);
+    .get(member.id, member.fellowship_id));
 
-  const attendanceHistory = db
+  const attendanceHistory = await (db
     .prepare(
       `
         SELECT attendance_sessions.week_start, attendance_sessions.week_end, attendance_records.present
@@ -2227,9 +2240,9 @@ app.get("/members/:id", requireAuth, (req, res) => {
         ORDER BY attendance_sessions.week_start ASC
       `
     )
-    .all(member.id, member.fellowship_id);
+    .all(member.id, member.fellowship_id));
 
-  const transferHistory = db
+  const transferHistory = await (db
     .prepare(
       `
         SELECT member_fellowship_transfers.*,
@@ -2242,9 +2255,9 @@ app.get("/members/:id", requireAuth, (req, res) => {
         ORDER BY member_fellowship_transfers.created_at DESC
       `
     )
-    .all(member.id);
+    .all(member.id));
 
-  const attendanceByFellowship = db
+  const attendanceByFellowship = await (db
     .prepare(
       `
         SELECT
@@ -2260,7 +2273,7 @@ app.get("/members/:id", requireAuth, (req, res) => {
         ORDER BY attendance_sessions.week_start ASC, fellowship_name
       `
     )
-    .all(member.id);
+    .all(member.id));
 
   const rate = attendanceStats.total_weeks
     ? Math.round((attendanceStats.attended_weeks / attendanceStats.total_weeks) * 100)
@@ -2292,8 +2305,8 @@ app.get("/members/:id", requireAuth, (req, res) => {
   });
 });
 
-app.get("/members/:id/edit", requireAuth, (req, res) => {
-  const member = getMemberWithDetails(Number(req.params.id));
+app.get("/members/:id/edit", requireAuth, async (req, res) => {
+  const member = await (getMemberWithDetails(Number(req.params.id)));
   if (!member) {
     return res.status(404).render("pages/not-found", {
       pageTitle: "Member Not Found",
@@ -2318,7 +2331,7 @@ app.get("/members/:id/edit", requireAuth, (req, res) => {
   });
 });
 
-app.post("/members/:id/merge", requireAuth, (req, res) => {
+app.post("/members/:id/merge", requireAuth, async (req, res) => {
   const winnerId = Number(req.params.id);
   const loserId = Number(req.body.duplicateMemberId);
   if (!Number.isFinite(loserId) || loserId <= 0 || loserId === winnerId) {
@@ -2326,15 +2339,15 @@ app.post("/members/:id/merge", requireAuth, (req, res) => {
     return res.redirect(`/members/${winnerId}`);
   }
 
-  const winner = getMemberWithDetails(winnerId);
-  const loser = getMemberWithDetails(loserId);
+  const winner = await (getMemberWithDetails(winnerId));
+  const loser = await (getMemberWithDetails(loserId));
   if (!winner || !loser) {
     setFlash(req, "error", "One of the selected records could not be found.");
     return res.redirect(`/members/${winnerId}`);
   }
 
-  db.transaction(() => {
-    const sessions = db
+  await (db.transaction(async () => {
+    const sessions = await (db
       .prepare(
         `
           SELECT attendance_records.attendance_session_id, attendance_records.present
@@ -2342,7 +2355,7 @@ app.post("/members/:id/merge", requireAuth, (req, res) => {
           WHERE attendance_records.member_id = ?
         `
       )
-      .all(loserId);
+      .all(loserId));
 
     const upsert = db.prepare(
       `
@@ -2354,46 +2367,48 @@ app.post("/members/:id/merge", requireAuth, (req, res) => {
           marked_at = CURRENT_TIMESTAMP
       `
     );
-    sessions.forEach((row) => upsert.run(row.attendance_session_id, winnerId, row.present));
+    for (const row of sessions) {
+      await upsert.run(row.attendance_session_id, winnerId, row.present);
+    }
 
     const combinedSubMinistryIds = [
-      ...new Set([...getMemberSubMinistryIds(winnerId), ...getMemberSubMinistryIds(loserId)]),
+      ...new Set([...await (getMemberSubMinistryIds(winnerId)), ...await (getMemberSubMinistryIds(loserId))]),
     ];
-    setMemberSubMinistries(winnerId, combinedSubMinistryIds);
+    await (setMemberSubMinistries(winnerId, combinedSubMinistryIds));
 
-    db.prepare("DELETE FROM member_sub_ministries WHERE member_id = ?").run(loserId);
-    db.prepare("DELETE FROM attendance_records WHERE member_id = ?").run(loserId);
-    db.prepare("DELETE FROM member_fellowship_transfers WHERE member_id = ?").run(loserId);
-    db.prepare("DELETE FROM members WHERE id = ?").run(loserId);
+    await (db.prepare("DELETE FROM member_sub_ministries WHERE member_id = ?").run(loserId));
+    await (db.prepare("DELETE FROM attendance_records WHERE member_id = ?").run(loserId));
+    await (db.prepare("DELETE FROM member_fellowship_transfers WHERE member_id = ?").run(loserId));
+    await (db.prepare("DELETE FROM members WHERE id = ?").run(loserId));
 
-    const refreshedDuplicates = detectDuplicateMembers({
+    const refreshedDuplicates = await (detectDuplicateMembers({
       fullName: winner.full_name,
       email: winner.email,
       phone: winner.phone,
       memberId: winnerId,
-    });
+    }));
     const duplicateNotes = refreshedDuplicates.length
       ? refreshedDuplicates.map((item) => `${item.full_name} (${item.email}, ${item.phone})`).join("; ")
       : null;
-    db.prepare(
+    await (db.prepare(
       "UPDATE members SET duplicate_flag = ?, duplicate_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-    ).run(refreshedDuplicates.length ? 1 : 0, duplicateNotes, winnerId);
-  })();
+    ).run(refreshedDuplicates.length ? 1 : 0, duplicateNotes, winnerId));
+  })());
 
-  logAudit(null, "member_merged", "member", winnerId, `Merged ${loser.full_name} (${loserId}) into ${winner.full_name} (${winnerId})`);
-  addNotification({
+  await (logAudit(null, "member_merged", "member", winnerId, `Merged ${loser.full_name} (${loserId}) into ${winner.full_name} (${winnerId})`));
+  await (addNotification({
     type: "info",
     title: "Duplicate merged",
     message: `Merged ${loser.full_name} into ${winner.full_name}. Attendance history was preserved.`,
     link: `/members/${winnerId}`,
     memberId: winnerId,
-  });
+  }));
   setFlash(req, "success", `Merged ${loser.full_name} into ${winner.full_name}. Attendance history was preserved.`);
   return res.redirect(`/members/${winnerId}`);
 });
 
-app.post("/members/:id/transfer", requireAuth, (req, res) => {
-  const member = getMemberWithDetails(Number(req.params.id));
+app.post("/members/:id/transfer", requireAuth, async (req, res) => {
+  const member = await (getMemberWithDetails(Number(req.params.id)));
   if (!member) {
     return res.status(404).render("pages/not-found", {
       pageTitle: "Member Not Found",
@@ -2415,81 +2430,81 @@ app.post("/members/:id/transfer", requireAuth, (req, res) => {
     return res.redirect(`/members/${member.id}`);
   }
 
-  const destination = db.prepare("SELECT id, name FROM fellowships WHERE id = ?").get(toFellowshipId);
+  const destination = await (db.prepare("SELECT id, name FROM fellowships WHERE id = ?").get(toFellowshipId));
   if (!destination) {
     setFlash(req, "error", "Destination fellowship not found.");
     return res.redirect(`/members/${member.id}`);
   }
 
   const oldFellowshipId = member.fellowship_id || null;
-  db.transaction(() => {
-    db.prepare(
+  await (db.transaction(async () => {
+    await (db.prepare(
       "UPDATE members SET fellowship_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-    ).run(toFellowshipId, member.id);
-    db.prepare(
+    ).run(toFellowshipId, member.id));
+    await (db.prepare(
       `
         INSERT INTO member_fellowship_transfers (
           member_id, from_fellowship_id, to_fellowship_id, transferred_by_user_id, notes
         ) VALUES (?, ?, ?, ?, ?)
       `
-    ).run(member.id, oldFellowshipId, toFellowshipId, req.currentUser.actorId, notes || null);
-  })();
+    ).run(member.id, oldFellowshipId, toFellowshipId, req.currentUser.actorId, notes || null));
+  })());
 
-  logAudit(null, "member_transferred", "member", member.id, `${member.fellowship_name || "No Fellowship"} -> ${destination.name}`);
-  addNotification({
+  await (logAudit(null, "member_transferred", "member", member.id, `${member.fellowship_name || "No Fellowship"} -> ${destination.name}`));
+  await (addNotification({
     type: "info",
     title: "Fellowship transfer",
     message: `${member.full_name} moved to ${destination.name}. Attendance history was preserved.`,
     link: `/members/${member.id}`,
     memberId: member.id,
     fellowshipId: toFellowshipId,
-  });
+  }));
   setFlash(req, "success", `${member.full_name} moved to ${destination.name}. Attendance history is preserved and shown by fellowship segment.`);
   return res.redirect(`/members/${member.id}`);
 });
 
-app.post("/members/:id/archive", requireAuth, (req, res) => {
-  const member = getMemberWithDetails(Number(req.params.id));
+app.post("/members/:id/archive", requireAuth, async (req, res) => {
+  const member = await (getMemberWithDetails(Number(req.params.id)));
   if (!member) {
     setFlash(req, "error", "Member not found.");
     return res.redirect("/members");
   }
 
-  archiveMember(member.id, String(req.body.reason || "").trim());
-  logAudit(null, "member_archived", "member", member.id, member.full_name);
-  addNotification({
+  await (archiveMember(member.id, String(req.body.reason || "").trim()));
+  await (logAudit(null, "member_archived", "member", member.id, member.full_name));
+  await (addNotification({
     type: "warning",
     title: "Member archived",
     message: `${member.full_name} was archived and hidden from the active directory by default.`,
     link: `/members?includeArchived=1`,
     memberId: member.id,
-  });
+  }));
   setFlash(req, "success", `${member.full_name} was archived.`);
   return res.redirect("/members");
 });
 
-app.post("/members/:id/restore", requireAuth, (req, res) => {
-  const member = getMemberWithDetails(Number(req.params.id));
+app.post("/members/:id/restore", requireAuth, async (req, res) => {
+  const member = await (getMemberWithDetails(Number(req.params.id)));
   if (!member) {
     setFlash(req, "error", "Member not found.");
     return res.redirect("/members?includeArchived=1");
   }
 
-  restoreMember(member.id);
-  logAudit(null, "member_restored", "member", member.id, member.full_name);
-  addNotification({
+  await (restoreMember(member.id));
+  await (logAudit(null, "member_restored", "member", member.id, member.full_name));
+  await (addNotification({
     type: "success",
     title: "Member restored",
     message: `${member.full_name} was restored and is visible again in the active directory.`,
     link: `/members/${member.id}`,
     memberId: member.id,
-  });
+  }));
   setFlash(req, "success", `${member.full_name} was restored.`);
   return res.redirect("/members?includeArchived=1");
 });
 
-app.post("/members/:id/edit", requireAuth, (req, res) => {
-  const existingMember = getMemberWithDetails(Number(req.params.id));
+app.post("/members/:id/edit", requireAuth, async (req, res) => {
+  const existingMember = await (getMemberWithDetails(Number(req.params.id)));
   if (!existingMember) {
     return res.status(404).render("pages/not-found", {
       pageTitle: "Member Not Found",
@@ -2509,20 +2524,20 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
   }
 
   const payload = parseMemberPayload(req.body);
-  const validationError = validateMemberPayload(payload);
+  const validationError = await (validateMemberPayload(payload));
   if (validationError) {
     setFlash(req, "error", validationError);
     return res.redirect(`/members/${existingMember.id}/edit`);
   }
 
-  const duplicates = detectDuplicateMembers({ ...payload, memberId: existingMember.id });
+  const duplicates = await (detectDuplicateMembers({ ...payload, memberId: existingMember.id }));
   const duplicateNotes = duplicates.length
     ? duplicates
         .map((item) => `${item.full_name} (${item.email}, ${item.phone})`)
         .join("; ")
     : null;
 
-  db.prepare(
+  await (db.prepare(
     `
       UPDATE members
       SET full_name = ?, gender = ?, birth_day = ?, birth_month = ?, hostel = ?, room_no = ?,
@@ -2549,43 +2564,44 @@ app.post("/members/:id/edit", requireAuth, (req, res) => {
     duplicates.length ? 1 : 0,
     duplicateNotes,
     existingMember.id
-  );
+  ));
 
-  setMemberSubMinistries(existingMember.id, payload.subMinistryIds);
+  await (setMemberSubMinistries(existingMember.id, payload.subMinistryIds));
 
-  logAudit(
+  await (logAudit(
     null,
     "member_updated",
     "member",
     existingMember.id,
     duplicateNotes
-  );
-  addNotification({
+  ));
+  await (addNotification({
     type: "info",
     title: "Member updated",
     message: `${existingMember.full_name} was updated in the directory.`,
     link: `/members/${existingMember.id}`,
     memberId: existingMember.id,
-  });
+  }));
   setFlash(req, "success", "Member record updated.");
   return res.redirect(`/members/${existingMember.id}`);
 });
 
-app.get("/fellowships", requireAuth, (_req, res) => {
+app.get("/fellowships", requireAuth, async (_req, res) => {
   const currentWeekStart = getWeekStart();
+  const attendanceSummary = await getAttendanceSummaryForWeek(currentWeekStart);
   const attendanceByFellowship = new Map(
-    getAttendanceSummaryForWeek(currentWeekStart).map((item) => [Number(item.id), item])
+    attendanceSummary.map((item) => [Number(item.id), item])
   );
-  const fellowships = db
+  const fellowshipRows = await (db
     .prepare("SELECT id, name, slug FROM fellowships ORDER BY name")
-    .all()
-    .map((fellowship) => ({
+    .all());
+  const fellowships = await Promise.all(fellowshipRows.map(async (fellowship) => ({
       ...fellowship,
       attendance: attendanceByFellowship.get(Number(fellowship.id)) || null,
-      memberCount: db
+      memberCount: Number((await db
         .prepare("SELECT COUNT(*) AS count FROM members WHERE fellowship_id = ? AND archived_at IS NULL")
-        .get(fellowship.id).count,
-    }));
+        .get(fellowship.id)).count),
+  })));
 
   res.render("pages/fellowships", {
     pageTitle: "Fellowships",
@@ -2593,9 +2609,9 @@ app.get("/fellowships", requireAuth, (_req, res) => {
   });
 });
 
-app.get("/leadership", requireAuth, (req, res) => {
+app.get("/leadership", requireAuth, async (req, res) => {
   const search = String(req.query.search || "").trim().toLowerCase();
-  const leaders = db
+  const leaderRows = await db
     .prepare(
       `
         SELECT members.id, members.full_name, roles.display_name AS role_name, roles.role_type,
@@ -2609,8 +2625,8 @@ app.get("/leadership", requireAuth, (req, res) => {
         ORDER BY fellowship_name, roles.role_type, role_name, members.full_name
       `
     )
-    .all()
-    .filter(
+    .all();
+  const leaders = leaderRows.filter(
       (row) =>
         !search ||
         row.full_name.toLowerCase().includes(search) ||
@@ -2624,10 +2640,10 @@ app.get("/leadership", requireAuth, (req, res) => {
   });
 });
 
-app.get("/fellowships/:slug", requireAuth, (req, res) => {
-  const fellowship = db
+app.get("/fellowships/:slug", requireAuth, async (req, res) => {
+  const fellowship = await (db
     .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
-    .get(req.params.slug);
+    .get(req.params.slug));
   if (!fellowship) {
     return res.status(404).render("pages/not-found", {
       pageTitle: "Fellowship Not Found",
@@ -2637,7 +2653,7 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
     });
   }
 
-  const members = db
+  const members = await (db
     .prepare(
       `
         SELECT members.*, courses.name AS course_name, sub_ministries.name AS sub_ministry_name,
@@ -2658,7 +2674,7 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
           members.full_name
       `
     )
-    .all(fellowship.id);
+    .all(fellowship.id));
 
   const leaders = {
     executives: members.filter((member) => member.role_type === "Executive"),
@@ -2666,7 +2682,7 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
     reps: members.filter((member) => member.role_type === "Rep"),
   };
 
-  const fellowshipSubMinistryRows = db
+  const fellowshipSubMinistryRows = await (db
     .prepare(
       `
         SELECT sub_ministries.name, COUNT(*) AS count
@@ -2691,7 +2707,7 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
         GROUP BY sub_ministries.id, sub_ministries.name
       `
     )
-    .all(fellowship.id, fellowship.id);
+    .all(fellowship.id, fellowship.id));
 
   const subMinistryCounts = new Map(
     fellowshipSubMinistryRows.map((row) => [row.name, Number(row.count)])
@@ -2710,11 +2726,12 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
 
   const currentWeekStart = getWeekStart();
   const currentWeekEnd = getWeekEnd(currentWeekStart);
-  const attendanceHeadline = getAttendanceSummaryForWeek(currentWeekStart).find(
+  const currentAttendanceSummary = await getAttendanceSummaryForWeek(currentWeekStart);
+  const attendanceHeadline = currentAttendanceSummary.find(
     (item) => Number(item.id) === Number(fellowship.id)
   );
 
-  const trend = db
+  const trendRows = await db
     .prepare(
       `
         SELECT attendance_sessions.week_start, attendance_sessions.week_end,
@@ -2728,19 +2745,19 @@ app.get("/fellowships/:slug", requireAuth, (req, res) => {
         LIMIT 10
       `
     )
-    .all(fellowship.id)
-    .map((row) => ({
+    .all(fellowship.id);
+  const trend = trendRows.map((row) => ({
       ...row,
       label: getWeekLabel(row.week_start, row.week_end),
       percentage: stats.totalMembers
         ? Math.round((row.present_total / stats.totalMembers) * 100)
         : 0,
     }));
-  const goingQuietMembers = getGoingQuietMembers({
+  const goingQuietMembers = await (getGoingQuietMembers({
     minStreak: 3,
     fellowshipId: fellowship.id,
-  });
-  const awayThisWeek = getLatestAwayListForFellowship(fellowship.id);
+  }));
+  const awayThisWeek = await (getLatestAwayListForFellowship(fellowship.id));
 
   res.render("pages/fellowship", {
     pageTitle: fellowship.name,
@@ -2763,12 +2780,12 @@ app.get(
   "/fellowships/:slug/away-this-week",
   requireAuth,
   requireManagerForFellowship,
-  (req, res) => {
-    const fellowship = db
+  async (req, res) => {
+    const fellowship = await (db
       .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
-      .get(req.params.slug);
+      .get(req.params.slug));
 
-    const awayThisWeek = getLatestAwayListForFellowship(fellowship.id);
+    const awayThisWeek = await (getLatestAwayListForFellowship(fellowship.id));
 
     res.render("pages/away-this-week", {
       pageTitle: `${fellowship.name} Away This Week`,
@@ -2784,11 +2801,11 @@ app.get(
   "/fellowships/:slug/away-this-week/print",
   requireAuth,
   requireManagerForFellowship,
-  (req, res) => {
-    const fellowship = db
+  async (req, res) => {
+    const fellowship = await (db
       .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
-      .get(req.params.slug);
-    const awayThisWeek = getLatestAwayListForFellowship(fellowship.id);
+      .get(req.params.slug));
+    const awayThisWeek = await (getLatestAwayListForFellowship(fellowship.id));
 
     res.render("pages/away-this-week-print", {
       pageTitle: `${fellowship.name} Away This Week (Print)`,
@@ -2805,19 +2822,19 @@ app.get(
   "/fellowships/:slug/attendance",
   requireAuth,
   requireManagerForFellowship,
-  (req, res) => {
-    const fellowship = db
+  async (req, res) => {
+    const fellowship = await (db
       .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
-      .get(req.params.slug);
+      .get(req.params.slug));
     const weekStart = getWeekStart(String(req.query.weekStart || ""));
     const weekEnd = getWeekEnd(weekStart);
-    const terms = db.prepare("SELECT id, label, start_date, end_date FROM terms ORDER BY start_date DESC").all();
+    const terms = await (db.prepare("SELECT id, label, start_date, end_date FROM terms ORDER BY start_date DESC").all());
     const selectedTermId = req.query.termId ? Number(req.query.termId) : null;
     const selectedTerm = selectedTermId
       ? terms.find((term) => Number(term.id) === selectedTermId) || null
       : null;
 
-    const members = db
+    const members = await (db
       .prepare(
         `
           SELECT id, full_name, role_id
@@ -2827,30 +2844,30 @@ app.get(
           ORDER BY full_name
         `
       )
-      .all(fellowship.id);
+      .all(fellowship.id));
 
-    const sessionRow = db
+    const sessionRow = await (db
       .prepare(
         `
           SELECT id FROM attendance_sessions
           WHERE fellowship_id = ? AND week_start = ?
         `
       )
-      .get(fellowship.id, weekStart);
+      .get(fellowship.id, weekStart));
 
     const markedLookup = new Map();
     if (sessionRow) {
-      db.prepare(
+      const attendanceRows = await db.prepare(
         `
           SELECT member_id, present
           FROM attendance_records
           WHERE attendance_session_id = ?
         `
       )
-        .all(sessionRow.id)
-        .forEach((record) => {
-          markedLookup.set(record.member_id, Boolean(record.present));
-        });
+        .all(sessionRow.id);
+      attendanceRows.forEach((record) => {
+        markedLookup.set(record.member_id, Boolean(record.present));
+      });
     }
 
     const historyQuery = selectedTerm
@@ -2879,10 +2896,10 @@ app.get(
           LIMIT 12
         `;
 
-    const history = db
+    const historyRows = await db
       .prepare(historyQuery)
-      .all(...(selectedTerm ? [fellowship.id, selectedTerm.start_date, selectedTerm.end_date] : [fellowship.id]))
-      .map((row) => ({
+      .all(...(selectedTerm ? [fellowship.id, selectedTerm.start_date, selectedTerm.end_date] : [fellowship.id]));
+    const history = historyRows.map((row) => ({
         ...row,
         label: getWeekLabel(row.week_start, row.week_end),
         percentage: members.length
@@ -2909,10 +2926,10 @@ app.post(
   "/fellowships/:slug/attendance",
   requireAuth,
   requireManagerForFellowship,
-  (req, res) => {
-    const fellowship = db
+  async (req, res) => {
+    const fellowship = await (db
       .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
-      .get(req.params.slug);
+      .get(req.params.slug));
     const weekStart = getWeekStart(String(req.body.weekStart || ""));
     const weekEnd = getWeekEnd(weekStart);
     const selectedIds = new Set(
@@ -2923,7 +2940,7 @@ app.post(
         : []
     );
 
-    const activeMembers = db
+    const activeMembers = await (db
       .prepare(
         `
           SELECT id
@@ -2932,10 +2949,10 @@ app.post(
             AND status = 'Active'
         `
       )
-      .all(fellowship.id);
+      .all(fellowship.id));
 
-    const transaction = db.transaction(() => {
-      db.prepare(
+    const transaction = db.transaction(async () => {
+      await (db.prepare(
         `
           INSERT INTO attendance_sessions (fellowship_id, week_start, week_end, recorded_by_user_id)
           VALUES (?, ?, ?, ?)
@@ -2945,16 +2962,16 @@ app.post(
             recorded_by_user_id = excluded.recorded_by_user_id,
             updated_at = CURRENT_TIMESTAMP
         `
-      ).run(fellowship.id, weekStart, weekEnd, req.currentUser.actorId);
+      ).run(fellowship.id, weekStart, weekEnd, req.currentUser.actorId));
 
-      const sessionRow = db
+      const sessionRow = await (db
         .prepare(
           `
             SELECT id FROM attendance_sessions
             WHERE fellowship_id = ? AND week_start = ?
           `
         )
-        .get(fellowship.id, weekStart);
+        .get(fellowship.id, weekStart));
 
       const upsertRecord = db.prepare(
         `
@@ -2967,28 +2984,28 @@ app.post(
         `
       );
 
-      activeMembers.forEach((member) => {
-        upsertRecord.run(sessionRow.id, member.id, selectedIds.has(member.id) ? 1 : 0);
-      });
+      for (const member of activeMembers) {
+        await upsertRecord.run(sessionRow.id, member.id, selectedIds.has(member.id) ? 1 : 0);
+      }
     });
 
-    transaction();
-    logAudit(
+    await transaction();
+    await (logAudit(
       null,
       "attendance_updated",
       "attendance_session",
       null,
       `${fellowship.name} ${weekStart}`
-    );
+    ));
     setFlash(req, "success", `Attendance saved for ${fellowship.name} (${weekStart}).`);
     return res.redirect(`/fellowships/${fellowship.slug}/attendance?weekStart=${weekStart}`);
   }
 );
 
-app.get("/terms", requireAuth, (req, res) => {
-  const terms = db
+app.get("/terms", requireAuth, async (req, res) => {
+  const terms = await (db
     .prepare("SELECT id, label, start_date, end_date, created_at FROM terms ORDER BY start_date DESC")
-    .all();
+    .all());
   res.render("pages/terms", {
     pageTitle: "Terms",
     terms,
@@ -2996,7 +3013,7 @@ app.get("/terms", requireAuth, (req, res) => {
   });
 });
 
-app.post("/terms", requireAuth, (req, res) => {
+app.post("/terms", requireAuth, async (req, res) => {
   const label = String(req.body.label || "").trim();
   const startDate = String(req.body.startDate || "").trim();
   const endDate = String(req.body.endDate || "").trim();
@@ -3005,14 +3022,14 @@ app.post("/terms", requireAuth, (req, res) => {
     return res.redirect("/terms");
   }
 
-  db.prepare("INSERT INTO terms (label, start_date, end_date) VALUES (?, ?, ?)")
-    .run(label, startDate, endDate);
-  logAudit(null, "term_created", "term", null, label);
+  await (db.prepare("INSERT INTO terms (label, start_date, end_date) VALUES (?, ?, ?)")
+    .run(label, startDate, endDate));
+  await (logAudit(null, "term_created", "term", null, label));
   setFlash(req, "success", `Term ${label} added.`);
   return res.redirect("/terms");
 });
 
-app.get("/exports/members.csv", requireAuth, (req, res) => {
+app.get("/exports/members.csv", requireAuth, async (req, res) => {
   const filters = {
     search: String(req.query.search || "").trim(),
     fellowshipId: req.query.fellowshipId ? Number(req.query.fellowshipId) : null,
@@ -3028,8 +3045,8 @@ app.get("/exports/members.csv", requireAuth, (req, res) => {
   };
 
   const { sql, params } = buildMembersQuery(filters);
-  const members = db.prepare(sql).all(...params);
-  logAudit(null, "members_exported_csv", "export", null, JSON.stringify(filters));
+  const members = await (db.prepare(sql).all(...params));
+  await (logAudit(null, "members_exported_csv", "export", null, JSON.stringify(filters)));
   const header = [
     "Full Name",
     "Gender",
@@ -3087,8 +3104,8 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
     };
 
     const { sql, params } = buildMembersQuery(filters);
-    const members = db.prepare(sql).all(...params);
-    logAudit(null, "members_exported_xlsx", "export", null, JSON.stringify(filters));
+    const members = await (db.prepare(sql).all(...params));
+    await (logAudit(null, "members_exported_xlsx", "export", null, JSON.stringify(filters)));
 
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet("Members");
@@ -3134,11 +3151,11 @@ app.get("/exports/members.xlsx", requireAuth, async (req, res, next) => {
   }
 });
 
-app.get("/fellowships/:slug/register-print", requireAuth, requireManagerForFellowship, (req, res) => {
-  const fellowship = db
+app.get("/fellowships/:slug/register-print", requireAuth, requireManagerForFellowship, async (req, res) => {
+  const fellowship = await (db
     .prepare("SELECT id, name, slug FROM fellowships WHERE slug = ?")
-    .get(req.params.slug);
-  const members = db
+    .get(req.params.slug));
+  const members = await (db
     .prepare(
       `
         SELECT full_name, hostel, room_no
@@ -3147,7 +3164,7 @@ app.get("/fellowships/:slug/register-print", requireAuth, requireManagerForFello
         ORDER BY full_name
       `
     )
-    .all(fellowship.id);
+    .all(fellowship.id));
   const weekColumns = Array.from({ length: 8 }, (_, index) => `Week ${index + 1}`);
   res.render("pages/register-print", {
     pageTitle: `${fellowship.name} Register`,
@@ -3157,19 +3174,19 @@ app.get("/fellowships/:slug/register-print", requireAuth, requireManagerForFello
   });
 });
 
-app.post("/courses/:id/duration", requireAuth, (req, res) => {
+app.post("/courses/:id/duration", requireAuth, async (req, res) => {
   const years = Number(req.body.durationYears);
   if (!Number.isFinite(years) || years < 1 || years > 8) {
     setFlash(req, "error", "Course duration must be between 1 and 8 years.");
     return res.redirect("/settings");
   }
-  db.prepare("UPDATE courses SET duration_years = ? WHERE id = ?").run(years, Number(req.params.id));
+  await (db.prepare("UPDATE courses SET duration_years = ? WHERE id = ?").run(years, Number(req.params.id)));
   setFlash(req, "success", "Course duration updated.");
   return res.redirect("/settings");
 });
 
-app.get("/members/promotions/preview", requireAuth, (req, res) => {
-  const members = db
+app.get("/members/promotions/preview", requireAuth, async (req, res) => {
+  const members = await (db
     .prepare(
       `
         SELECT members.id, members.full_name, members.level, courses.id AS course_id,
@@ -3180,7 +3197,7 @@ app.get("/members/promotions/preview", requireAuth, (req, res) => {
         ORDER BY members.full_name
       `
     )
-    .all();
+    .all());
 
   const promotable = [];
   const flagged = [];
@@ -3210,8 +3227,8 @@ app.get("/members/promotions/preview", requireAuth, (req, res) => {
   });
 });
 
-app.post("/members/promotions/apply", requireAuth, (req, res) => {
-  const promotions = db
+app.post("/members/promotions/apply", requireAuth, async (req, res) => {
+  const promotions = await (db
     .prepare(
       `
         SELECT members.id, members.level, courses.duration_years
@@ -3220,39 +3237,57 @@ app.post("/members/promotions/apply", requireAuth, (req, res) => {
         WHERE members.archived_at IS NULL
       `
     )
-    .all();
+    .all());
 
   const update = db.prepare("UPDATE members SET level = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
   let promotedCount = 0;
-  db.transaction(() => {
-    promotions.forEach((member) => {
+  await (db.transaction(async () => {
+    for (const member of promotions) {
       const level = Number(member.level);
       if (!Number.isFinite(level) || level < 100 || !member.duration_years) {
-        return;
+        continue;
       }
       const terminal = Number(member.duration_years) * 100;
       if (level < terminal) {
-        update.run(String(level + 100), member.id);
+        await update.run(String(level + 100), member.id);
         promotedCount += 1;
       }
-    });
-  })();
+    }
+  })());
 
-  logAudit(null, "annual_promotion_applied", "member", null, `promoted=${promotedCount}`);
+  await (logAudit(null, "annual_promotion_applied", "member", null, `promoted=${promotedCount}`));
   setFlash(req, "success", `Annual promotion applied to ${promotedCount} member(s).`);
   return res.redirect("/members/promotions/preview");
 });
 
-app.get("/settings/backup/download", requireAuth, (req, res) => {
+app.get("/settings/backup/download", requireAuth, async (req, res) => {
   const now = new Date().toISOString().replace(/[:.]/g, "-");
+  if (postgresMode) {
+    const tableNames = [
+      "fellowships", "sub_ministries", "courses", "roles", "users", "members",
+      "member_sub_ministries", "member_fellowship_transfers", "attendance_sessions",
+      "attendance_records", "audit_logs", "app_settings", "notifications",
+      "notification_preferences", "notification_deliveries", "terms",
+    ];
+    const tables = {};
+    await db.transaction(async () => {
+      for (const tableName of tableNames) {
+        tables[tableName] = await db.prepare(`SELECT * FROM ${tableName} ORDER BY 1`).all();
+      }
+    })();
+    await logAudit(null, "backup_downloaded", "backup", null, "postgres-json-export");
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="teens-aloud-backup-${now}.json"`);
+    return res.send(JSON.stringify({ format: "taf-postgres-backup-v1", createdAt: new Date().toISOString(), tables }));
+  }
+
   const backupDir = path.join(__dirname, "..", "db-backups");
   if (!fs.existsSync(backupDir)) {
     fs.mkdirSync(backupDir, { recursive: true });
   }
   const backupPath = path.join(backupDir, `manual-backup-${now}.db`);
-  db.pragma("wal_checkpoint(FULL)");
   fs.copyFileSync(databasePath, backupPath);
-  logAudit(null, "backup_downloaded", "backup", null, backupPath);
+  await (logAudit(null, "backup_downloaded", "backup", null, backupPath));
   return res.download(backupPath, `teens-aloud-backup-${now}.db`);
 });
 
@@ -3280,15 +3315,22 @@ app.use((error, req, res, _next) => {
   });
 });
 
-app.listen(PORT, HOST, () => {
-  const networkUrls = Object.values(os.networkInterfaces())
-    .flat()
-    .filter((detail) => detail && detail.family === "IPv4" && !detail.internal)
-    .map((detail) => `http://${detail.address}:${PORT}`);
+databaseReady
+  .then(() => {
+    app.listen(PORT, HOST, () => {
+      const networkUrls = Object.values(os.networkInterfaces())
+        .flat()
+        .filter((detail) => detail && detail.family === "IPv4" && !detail.internal)
+        .map((detail) => `http://${detail.address}:${PORT}`);
 
-  console.log(`Teens Aloud Foundation app running on http://localhost:${PORT}`);
-  console.log(`Public binding enabled on ${HOST}:${PORT}`);
-  if (networkUrls.length > 0) {
-    console.log(`Reach it on your network via: ${networkUrls.join(", ")}`);
-  }
-});
+      console.log(`Teens Aloud Foundation app running on http://localhost:${PORT}`);
+      console.log(`Public binding enabled on ${HOST}:${PORT}`);
+      if (networkUrls.length > 0) {
+        console.log(`Reach it on your network via: ${networkUrls.join(", ")}`);
+      }
+    });
+  })
+  .catch((error) => {
+    console.error("Database initialization failed; refusing to start.", error.message);
+    process.exitCode = 1;
+  });
